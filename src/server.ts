@@ -1,28 +1,19 @@
-import express, { type Application, type Request, type Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import dotenv from 'dotenv';
+import { prisma } from './prisma.js';
 
-const config = {
-  port: process.env.PORT || 5000,
-};
+dotenv.config();
 
-const app: Application = express();
+const app = express();
+const PORT = process.env.PORT || 5000;
 
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-app.get('/favicon.ico', (req: Request, res: Response) => {
-  res.status(204).end();
-});
-
-app.get('/', (req: Request, res: Response) => {
-  res.status(200).json({
-    success: true,
-    message: 'Welcome to Emergency Ambulance Dispatch API',
-  });
-});
-
+// Health check endpoint
 app.get('/api/v1/health', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
@@ -36,11 +27,15 @@ app.get('/api/v1/health', (req: Request, res: Response) => {
 
 async function main() {
   try {
-    app.listen(config.port, () => {
-      console.log(`Server listening on port ${config.port}`);
+    await prisma.$connect();
+    console.log('✅ Database connected successfully with Prisma 7');
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Server is running on port ${PORT}`);
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    console.error('❌ Database connection failed:', error);
+    await prisma.$disconnect();
     process.exit(1);
   }
 }

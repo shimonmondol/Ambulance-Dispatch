@@ -12,7 +12,7 @@
     "prisma:seed": "ts-node-dev prisma/seed.ts"
   },
   "prisma": {
-    "seed": "ts-node-dev prisma/seed.ts"
+    "seed": "npx tsx prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
