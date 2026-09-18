@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CUSTOMER
+  PROVIDER
+  ADMIN
+}
+
+enum AmbulanceType {
+  BASIC_LIFE_SUPPORT
+  ADVANCED_LIFE_SUPPORT
+  ICU
+  FREEZER
+}
+
+enum DispatchStatus {
+  PENDING
+  ACCEPTED
+  EN_ROUTE
+  ARRIVED_AT_SCENE
+  PATIENT_PICKED_UP
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id              String           @id @default(uuid())
+  name            String
+  email           String           @unique
+  phone           String           @unique
+  password        String
+  role            Role             @default(CUSTOMER)
+  isVerified      Boolean          @default(false)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  providerProfile ProviderProfile?
+  rideRequests    RideRequest[]    @relation("CustomerRequests")
+  auditLogs       AuditLog[]
+
+  @@index([email, phone])
+}
+
+model ProviderProfile {
+  id            String        @id @default(uuid())
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id])
+  licenseNumber String        @unique
+  isAvailable   Boolean       @default(true)
+  currentLat    Float?
+  currentLng    Float?
+  deletedAt     DateTime?
+
+  ambulance     Ambulance?
+  assignedRides RideRequest[] @relation("ProviderRides")
+}
+
+model Ambulance {
+  id             String           @id @default(uuid())
+  registrationNo String           @unique
+  type           AmbulanceType
+  providerId     String?          @unique
+  provider       ProviderProfile? @relation(fields: [providerId], references: [id])
+  isOperational  Boolean          @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+
+  @@index([type, isOperational])
+}
+
+model RideRequest {
+  id                 String           @id @default(uuid())
+  customerId         String
+  customer           User             @relation("CustomerRequests", fields: [customerId], references: [id])
+  providerId         String?
+  provider           ProviderProfile? @relation("ProviderRides", fields: [providerId], references: [id])
+  pickupAddress      String
+  pickupLat          Float
+  pickupLng          Float
+  destination        String
+  ambulanceType      AmbulanceType
+  status             DispatchStatus   @default(PENDING)
+  fareAmount         Float
+  cancellationReason String?
+  deletedAt          DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  payment            Payment?
+
+  @@index([status, customerId, providerId])
+}
+
+model Payment {
+  id                 String        @id @default(uuid())
+  rideRequestId      String        @unique
+  rideRequest        RideRequest   @relation(fields: [rideRequestId], references: [id])
+  transactionId      String?       @unique
+  amount             Float
+  provider           String        // "BKASH" | "STRIPE" | "SSLCOMMERZ"
+  status             PaymentStatus @default(UNPAID)
+  paymentGatewayData Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  metadata  Json?
+  createdAt DateTime @default(now())
+}
