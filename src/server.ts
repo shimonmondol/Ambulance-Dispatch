@@ -1,40 +1,26 @@
-import express, { type Request, type Response } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { prisma } from './prisma.js';
+import appRoutes from './app/routes/index.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// REST API এর জন্য Helmet এর CSP নিষ্ক্রিয় রাখা (ফন্ট ও কানেকশন ব্লকিং ফিক্স)
+// ১. সিকিউরিটি ও বডি পার্সার
 app.use(
   helmet({
     contentSecurityPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
-
 app.use(cors());
 app.use(express.json());
 
-// ১. রুট (/) এর জন্য হ্যান্ডলার (404 ফিক্স)
-app.get('/', (_req: Request, res: Response) => {
-  res.status(200).json({
-    success: true,
-    message: 'Welcome to Emergency Ambulance Dispatch API',
-  });
-});
-
-// ২. Chrome DevTools এর রিকোয়েস্ট সাইলেন্ট করা
-app.get('/.well-known/appspecific/com.chrome.devtools.json', (_req: Request, res: Response) => {
-  res.status(204).end();
-});
-
-// Health check endpoint
-app.get('/api/v1/health', (_req: Request, res: Response) => {
+// ২. হেলথ চেক এন্ডপয়েন্ট (এখন সরাসরি /health)
+app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     message: 'Emergency Ambulance Dispatch Server is operational',
@@ -45,19 +31,50 @@ app.get('/api/v1/health', (_req: Request, res: Response) => {
   });
 });
 
-async function main() {
+// ৩. মেইন এপিআই রাউটস (কোনো /api/v1 প্রিফিক্স ছাড়া)
+app.use('/', appRoutes);
+
+// ৪. হোম রুট
+app.get('/', (req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    message: 'Emergency Ambulance Dispatch Server is Running',
+  });
+});
+
+// ৫. ৪MD / Route Not Found হ্যান্ডলার
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route Not Found',
+    path: req.originalUrl,
+  });
+});
+
+// ৬. গ্লোবাল এরর হ্যান্ডলার
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
+  const statusCode = err.statusCode || 500;
+  res.status(statusCode).json({
+    success: false,
+    message: err.message || 'Internal Server Error',
+    errors: err.errors || [],
+  });
+});
+
+// ৭. সার্ভার বুটস্ট্র্যাপ
+async function main () {
   try {
     await prisma.$connect();
-    console.log('✅ Ambulance Server connected successfully');
+    console.log('✅ Database connected successfully');
 
     app.listen(PORT, () => {
-      console.log(`🚀 Server is running on port ${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
     });
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
+    console.error('❌ Failed to connect database:', error);
     await prisma.$disconnect();
     process.exit(1);
   }
 }
 
-main();
+main ();

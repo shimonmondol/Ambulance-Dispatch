@@ -1,7 +1,12 @@
-import { type NextFunction, type Request, type Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
+import jwt, { type Secret } from 'jsonwebtoken';
 import { Role } from '@prisma/client';
-import { jwtHelpers } from '../utils/jwtHelpers.js';
-import { type TJwtPayload } from '../../types/index.js';
+
+export type TJwtPayload = {
+  id: string;
+  email: string;
+  role: Role;
+};
 
 export const auth = (...requiredRoles: Role[]) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -17,22 +22,12 @@ export const auth = (...requiredRoles: Role[]) => {
       }
 
       const token = authHeader.split(' ')[1];
+      const secret = (process.env.JWT_ACCESS_SECRET || 'super_access_secret_key') as Secret;
 
-      if (!token) {
-        res.status(401).json({
-          success: false,
-          message: 'Unauthorized access. Malformed token format.',
-          errors: [],
-        });
-        return;
-      }
+      // Type error fix: Convert to unknown first
+      const verifiedUser = jwt.verify(token!, secret) as unknown as TJwtPayload;
 
-      const verifiedUser = jwtHelpers.verifyToken(
-        token,
-        process.env.JWT_ACCESS_SECRET as string
-      ) as TJwtPayload;
-
-      req.user = verifiedUser;
+      (req as any).user = verifiedUser;
 
       if (requiredRoles.length && !requiredRoles.includes(verifiedUser.role)) {
         res.status(403).json({
@@ -44,11 +39,11 @@ export const auth = (...requiredRoles: Role[]) => {
       }
 
       next();
-    } catch (error) {
+    } catch (error: any) {
       res.status(401).json({
         success: false,
         message: 'Invalid or expired token.',
-        errors: error instanceof Error ? [error.message] : [],
+        errors: [error.message],
       });
     }
   };
