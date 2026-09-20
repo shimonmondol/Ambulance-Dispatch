@@ -1,6 +1,6 @@
 import { type Request, type Response } from 'express';
-import { catchAsync } from '../../../src/app/utils/catchAsync.js';
-import { sendResponse } from '../../../src/app/utils/sendResponse.js';
+import { catchAsync } from '../utils/catchAsync.js';
+import { sendResponse } from '../utils/sendResponse.js';
 import { UserService } from '../services/user.service.js';
 
 const getMe = catchAsync(async (req: Request, res: Response) => {

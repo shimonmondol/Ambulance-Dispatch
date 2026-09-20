@@ -5,7 +5,7 @@ import {
   type NextFunction,
 } from "express";
 import { Role, DispatchStatus, PaymentStatus } from "@prisma/client";
-import { prisma } from "../.././prisma.js";
+import { prisma } from "../../prisma.js";
 import { auth } from "../middlewares/auth.js";
 import { validateRequest } from "../middlewares/validateRequest.js";
 import {
@@ -17,7 +17,7 @@ import { calculatePagination } from "../utils/paginationHelper.js";
 
 const router = Router();
 
-// ১. Create Ride Request (CUSTOMER only)
+// Create Ride Request (CUSTOMER only)
 router.post(
   "/",
   auth(Role.CUSTOMER),
@@ -36,7 +36,6 @@ router.post(
       const baseFare = 1200.0;
 
       const result = await prisma.$transaction(async (tx) => {
-        // Payment মডেলে provider required থাকায় 'provider: "CASH"' যোগ করা হয়েছে
         const ride = await tx.rideRequest.create({
           data: {
             customerId: user.id,
@@ -59,8 +58,6 @@ router.post(
             payment: true,
           },
         });
-
-        // AuditLog স্কিমা অনুযায়ী entity ও entityId ফিল্ড ব্যবহার করা হয়েছে
         await tx.auditLog.create({
           data: {
             userId: user.id,
@@ -84,7 +81,7 @@ router.post(
   },
 );
 
-// ২. List Rides with Pagination, Filtering & Sorting
+// List Rides with Pagination, Filtering & Sorting
 router.get(
   "/",
   auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
@@ -100,12 +97,9 @@ router.get(
       });
 
       const andConditions: any[] = [{ deletedAt: null }];
-
-      // রোল অনুযায়ী ডেটা ফিল্টারিং
       if (user.role === Role.CUSTOMER) {
         andConditions.push({ customerId: user.id });
       } else if (user.role === Role.PROVIDER) {
-        // ProviderProfile আইডি পাওয়া গেলে স্কোপ করা
         const profile = await prisma.providerProfile.findUnique({
           where: { userId: user.id },
         });
@@ -113,7 +107,6 @@ router.get(
           andConditions.push({ providerId: profile.id });
         }
       }
-
       if (status) {
         andConditions.push({ status: status as DispatchStatus });
       }
@@ -138,7 +131,6 @@ router.get(
       }
 
       const whereConditions = { AND: andConditions };
-
       const [rides, total] = await Promise.all([
         prisma.rideRequest.findMany({
           where: whereConditions,
@@ -176,7 +168,7 @@ router.get(
   },
 );
 
-// ৩. Get Single Ride Details
+// Get Single Ride Details
 router.get(
   "/:id",
   auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
@@ -213,7 +205,7 @@ router.get(
   },
 );
 
-// ৪. Assign Provider to Ride
+// Assign Provider to Ride
 router.patch(
   "/:id/assign",
   auth(Role.ADMIN, Role.PROVIDER),
@@ -239,8 +231,6 @@ router.patch(
             status: DispatchStatus.ACCEPTED,
           },
         });
-
-        // ড্রাইভার/প্রোভাইডারের স্টেটাস busy করা
         await tx.providerProfile.update({
           where: { id: providerId },
           data: { isAvailable: false },
@@ -269,7 +259,7 @@ router.patch(
   },
 );
 
-// ৫. Update Ride Status Lifecycle
+// Update Ride Status Lifecycle
 router.patch(
   "/:id/status",
   auth(Role.ADMIN, Role.PROVIDER),
@@ -284,7 +274,6 @@ router.patch(
         const currentRide = await tx.rideRequest.findUnique({ where: { id } });
         if (!currentRide) throw new Error("Ride request not found");
 
-        // আপনার স্কিমার DispatchStatus এনাম অনুযায়ী ট্রানজিশন লজিক
         const validTransitions: Record<DispatchStatus, DispatchStatus[]> = {
           PENDING: [DispatchStatus.CANCELLED, DispatchStatus.ACCEPTED],
           ACCEPTED: [DispatchStatus.EN_ROUTE, DispatchStatus.CANCELLED],
@@ -311,8 +300,6 @@ router.patch(
           where: { id },
           data: { status },
         });
-
-        // রাইড শেষ বা ক্যানসেল হলে প্রোভাইডার আবার Available হবে
         if (
           (status === DispatchStatus.COMPLETED ||
             status === DispatchStatus.CANCELLED) &&
@@ -346,7 +333,7 @@ router.patch(
   },
 );
 
-// ৬. Cancel Ride Request (Customer)
+// Cancel Ride Request (Customer)
 router.patch(
   "/:id/cancel",
   auth(Role.CUSTOMER),
@@ -407,7 +394,7 @@ router.patch(
   },
 );
 
-// ৭. Hard Delete Ride (Admin Only)
+// Hard Delete Ride (Admin Only)
 router.delete(
   "/:id",
   auth(Role.ADMIN),

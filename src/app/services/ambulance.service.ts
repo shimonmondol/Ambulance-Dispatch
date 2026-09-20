@@ -1,5 +1,5 @@
 import { type Ambulance, AmbulanceType, Role } from '@prisma/client';
-import { prisma } from '../../../src/prisma.js';
+import { prisma } from '../../prisma.js';
 
 const createAmbulance = async (payload: {
   registrationNo: string;

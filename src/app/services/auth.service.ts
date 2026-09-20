@@ -1,6 +1,6 @@
 import bcrypt from 'bcrypt';
 import { Role, type User } from '@prisma/client';
-import { prisma } from '../../../src/prisma.js';
+import { prisma } from '../../prisma.js';
 import { jwtHelpers } from '../utils/jwtHelpers.js';
 
 const registerUser = async (payload: {

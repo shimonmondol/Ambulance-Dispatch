@@ -1,4 +1,4 @@
-import { prisma } from '../../../src/prisma.js';
+import { prisma } from '../../prisma.js';
 
 const getMyProfile = async (userId: string) => {
   const user = await prisma.user.findUnique({

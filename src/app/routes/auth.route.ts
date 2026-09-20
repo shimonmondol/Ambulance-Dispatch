@@ -40,7 +40,7 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
       return userWithoutPass;
     });
 
-    // রোল অনুযায়ী ক্যাপিটালাইজড মেসেজ তৈরি (যেমন: 'Admin', 'Customer', 'Provider')
+    // Creating capitalized messages according to roles(Example: 'Admin', 'Customer', 'Provider')
     const formattedRole = result.role.charAt(0).toUpperCase() + result.role.slice(1).toLowerCase();
 
     res.status(201).json({

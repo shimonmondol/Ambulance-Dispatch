@@ -109,7 +109,6 @@ router.patch(
 
       const { registrationNo, type, isOperational } = req.body;
 
-      // ১. অ্যাম্বুলেন্সটি বিদ্যমান কি না চেক
       const existingAmbulance = await prisma.ambulance.findFirst({
         where: { id, deletedAt: null },
       });
@@ -123,7 +122,6 @@ router.patch(
         return;
       }
 
-      // ২. যদি নতুন registrationNo দেওয়া হয় এবং তা বর্তমানটির চেয়ে আলাদা হয়
       if (
         registrationNo &&
         registrationNo !== existingAmbulance.registrationNo
@@ -142,14 +140,12 @@ router.patch(
         }
       }
 
-      // ৩. শুধুমাত্র পাঠানো ফিল্ডগুলো ফিল্টার করা
       const updateData: {
         registrationNo?: string;
         type?: AmbulanceType;
         isOperational?: boolean;
       } = {};
 
-      // registrationNo শুধু তখনই আপডেটে যাবে যদি তা সত্যিই পরিবর্তন হয়ে থাকে
       if (
         registrationNo !== undefined &&
         registrationNo !== existingAmbulance.registrationNo
@@ -160,7 +156,6 @@ router.patch(
       if (isOperational !== undefined)
         updateData.isOperational = Boolean(isOperational);
 
-      // ৪. আপডেট এক্সিকিউশন
       const updated = await prisma.ambulance.update({
         where: { id },
         data: updateData,
@@ -172,7 +167,6 @@ router.patch(
         data: updated,
       });
     } catch (err: any) {
-      // Prisma unique constraint error catch (P2002)
       if (err.code === "P2002") {
         res.status(400).json({
           success: false,
