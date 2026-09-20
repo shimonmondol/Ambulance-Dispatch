@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import bcrypt from 'bcrypt';
 import jwt, { type Secret } from 'jsonwebtoken';
 import { Role } from '@prisma/client';
-import { prisma } from '../.././prisma.js';
+import { prisma } from '../../prisma.js';
 
 const router = Router();
 const JWT_ACCESS_SECRET = process.env.JWT_ACCESS_SECRET || 'super_access_secret_key';
@@ -40,7 +40,14 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
       return userWithoutPass;
     });
 
-    res.status(201).json({ success: true, message: 'User registered successfully', data: result });
+    // রোল অনুযায়ী ক্যাপিটালাইজড মেসেজ তৈরি (যেমন: 'Admin', 'Customer', 'Provider')
+    const formattedRole = result.role.charAt(0).toUpperCase() + result.role.slice(1).toLowerCase();
+
+    res.status(201).json({
+      success: true,
+      message: `${formattedRole} registered successfully`,
+      data: result,
+    });
   } catch (err) {
     next(err);
   }
