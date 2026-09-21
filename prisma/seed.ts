@@ -1,79 +1,105 @@
+import 'dotenv/config';
 import { Role, AmbulanceType } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
-import { prisma } from '../src/prisma';
+import bcrypt from 'bcrypt';
+import { prisma } from '../src/prisma.js';
+
+const FLEET_TEMPLATES = [
+  { type: AmbulanceType.ICU, prefix: 'DHAKA-METRO-ICU', lat: 23.8103, lng: 90.4125 },
+  { type: AmbulanceType.ADVANCED_LIFE_SUPPORT, prefix: 'DHAKA-METRO-ALS', lat: 23.7925, lng: 90.4078 },
+  { type: AmbulanceType.BASIC_LIFE_SUPPORT, prefix: 'DHAKA-METRO-BLS', lat: 23.7509, lng: 90.3935 },
+];
 
 async function main() {
-  const adminPassword = await bcrypt.hash('Admin@123456', 10);
-  const providerPassword = await bcrypt.hash('Provider@123456', 10);
-  const customerPassword = await bcrypt.hash('Customer@123456', 10);
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@dispatch.com';
+  const adminPassword = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD || 'Admin@123456', 10);
 
-  // ১. Admin তৈরি
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@dispatch.com' },
-    update: {},
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: {
+      password: adminPassword,
+      role: Role.ADMIN,
+      isVerified: true,
+    },
     create: {
-      name: 'Central Admin',
-      email: 'admin@dispatch.com',
-      phone: '+8801700000001',
+      name: process.env.SEED_ADMIN_NAME || 'Central Dispatch Admin',
+      email: adminEmail,
+      phone: process.env.SEED_ADMIN_PHONE || '+8801700000001',
       password: adminPassword,
       role: Role.ADMIN,
       isVerified: true,
     },
   });
 
-  // ২. Provider তৈরি (Driver Profile এবং Ambulance সহ)
-  const provider = await prisma.user.upsert({
-    where: { email: 'provider1@dispatch.com' },
-    update: {},
-    create: {
-      name: 'Rahim Ambulance Service',
-      email: 'provider1@dispatch.com',
-      phone: '+8801700000002',
-      password: providerPassword,
-      role: Role.PROVIDER,
-      isVerified: true,
-      providerProfile: {
-        create: {
-          licenseNumber: 'DHAKA-METRO-D-45210',
-          isAvailable: true,
-          currentLat: 23.8103,
-          currentLng: 90.4125,
-          ambulance: {
+  const providerCount = Number(process.env.SEED_PROVIDER_COUNT) || 3;
+
+  for (let i = 1; i <= providerCount; i++) {
+    const providerEmail = `provider${i}@dispatch.com`;
+    const providerPassword = await bcrypt.hash(`Provider@123456`, 10);
+    const template = FLEET_TEMPLATES[(i - 1) % FLEET_TEMPLATES.length];
+    const registrationNo = `${template.prefix}-${String(i).padStart(3, '0')}`;
+    const licenseNumber = `DL-DHK-${String(45200 + i)}`;
+
+    const existingProvider = await prisma.user.findUnique({
+      where: { email: providerEmail },
+    });
+
+    if (!existingProvider) {
+      await prisma.user.create({
+        data: {
+          name: `Emergency Provider Unit ${i}`,
+          email: providerEmail,
+          phone: `+88017000000${String(10 + i)}`,
+          password: providerPassword,
+          role: Role.PROVIDER,
+          isVerified: true,
+          providerProfile: {
             create: {
-              registrationNo: 'AMB-DHAKA-701',
-              type: AmbulanceType.ICU,
-              isOperational: true,
+              licenseNumber,
+              isAvailable: true,
+              currentLat: template.lat,
+              currentLng: template.lng,
+              ambulance: {
+                create: {
+                  registrationNo,
+                  type: template.type,
+                  isOperational: true,
+                },
+              },
             },
           },
         },
+      });
+    }
+  }
+
+  const customerCount = Number(process.env.SEED_CUSTOMER_COUNT) || 2;
+
+  for (let j = 1; j <= customerCount; j++) {
+    const customerEmail = `customer${j}@dispatch.com`;
+    const customerPassword = await bcrypt.hash(`Customer@123456`, 10);
+
+    await prisma.user.upsert({
+      where: { email: customerEmail },
+      update: {
+        password: customerPassword,
+        role: Role.CUSTOMER,
+        isVerified: true,
       },
-    },
-  });
-
-  // ৩. Test Customer তৈরি
-  const customer = await prisma.user.upsert({
-    where: { email: 'customer1@dispatch.com' },
-    update: {},
-    create: {
-      name: 'Hasan Ahmed',
-      email: 'customer1@dispatch.com',
-      phone: '+8801700000003',
-      password: customerPassword,
-      role: Role.CUSTOMER,
-      isVerified: true,
-    },
-  });
-
-  console.log('✅ Seed successful:', {
-    admin: admin.email,
-    provider: provider.email,
-    customer: customer.email,
-  });
+      create: {
+        name: `Emergency Customer ${j}`,
+        email: customerEmail,
+        phone: `+88018000000${String(20 + j)}`,
+        password: customerPassword,
+        role: Role.CUSTOMER,
+        isVerified: true,
+      },
+    });
+  }
 }
 
 main()
-  .catch((e) => {
-    console.error('❌ Seed execution failed:', e);
+  .catch((error) => {
+    process.stderr.write(`Database seed failure: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);
   })
   .finally(async () => {
