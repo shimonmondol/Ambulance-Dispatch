@@ -1,12 +1,10 @@
+import 'dotenv/config';
 import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import { prisma } from './prisma.js';
 import appRoutes from './app/routes/index.js';
 import { globalErrorHandler } from './app/middlewares/globalErrorHandler.js';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -17,7 +15,18 @@ app.use(
   })
 );
 app.use(cors());
-app.use(express.json());
+
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      // যদি রিকোয়েস্ট stripe webhook রাউটে আসে তবে raw buffer রেখে দেওয়া হয়
+      if (req.originalUrl.includes('/webhook')) {
+        req.rawBody = buf;
+      }
+    },
+  })
+);
+app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req: Request, res: Response) => {
   res.status(200).json({
