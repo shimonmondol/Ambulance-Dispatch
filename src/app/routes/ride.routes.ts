@@ -26,49 +26,64 @@ router.post(
     try {
       const user = (req as any).user;
       const {
+        pickupLocation,
+        dropLocation,
         pickupAddress,
+        destination,
         pickupLat,
         pickupLng,
-        destination,
         ambulanceType,
       } = req.body;
 
+      const resolvedPickupAddress = (pickupLocation || pickupAddress) as string;
+      const resolvedDestination = (dropLocation || destination) as string;
+
+      const parsedPickupLat = Number(pickupLat);
+      const parsedPickupLng = Number(pickupLng);
+
       const baseFare = 1200.0;
 
-      const result = await prisma.$transaction(async (tx) => {
-        const ride = await tx.rideRequest.create({
-          data: {
-            customerId: user.id,
-            pickupAddress,
-            pickupLat: Number(pickupLat),
-            pickupLng: Number(pickupLng),
-            destination,
-            ambulanceType,
-            status: DispatchStatus.PENDING,
-            fareAmount: baseFare,
-            payment: {
-              create: {
-                amount: baseFare,
-                status: PaymentStatus.UNPAID,
-                provider: "CASH", // BKASH | STRIPE | SSLCOMMERZ | CASH
+      const result = await prisma.$transaction(
+        async (tx) => {
+          const ride = await tx.rideRequest.create({
+            data: {
+              customerId: user.id,
+              pickupAddress: resolvedPickupAddress,
+              destination: resolvedDestination,
+              pickupLat: !isNaN(parsedPickupLat) ? parsedPickupLat : 23.8103,
+              pickupLng: !isNaN(parsedPickupLng) ? parsedPickupLng : 90.4125,
+              ambulanceType: ambulanceType || "ICU",
+              status: DispatchStatus.PENDING,
+              fareAmount: baseFare,
+              payment: {
+                create: {
+                  amount: baseFare,
+                  status: PaymentStatus.UNPAID,
+                  provider: "CASH",
+                },
               },
             },
-          },
-          include: {
-            payment: true,
-          },
-        });
-        await tx.auditLog.create({
-          data: {
-            userId: user.id,
-            action: "DISPATCH_REQUEST_CREATED",
-            entity: "RideRequest",
-            entityId: ride.id,
-          },
-        });
+            include: {
+              payment: true,
+            },
+          });
 
-        return ride;
-      });
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: "DISPATCH_REQUEST_CREATED",
+              entity: "RideRequest",
+              entityId: ride.id,
+            },
+          });
+
+          return ride;
+        },
+        {
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
 
       res.status(201).json({
         success: true,
@@ -216,37 +231,43 @@ router.patch(
       const user = (req as any).user;
       const { providerId } = req.body;
 
-      const result = await prisma.$transaction(async (tx) => {
-        const ride = await tx.rideRequest.findUnique({ where: { id } });
-        if (!ride || ride.status !== DispatchStatus.PENDING) {
-          throw new Error(
-            "Ride request cannot be assigned (Must be in PENDING state)",
-          );
-        }
+      const result = await prisma.$transaction(
+        async (tx) => {
+          const ride = await tx.rideRequest.findUnique({ where: { id } });
+          if (!ride || ride.status !== DispatchStatus.PENDING) {
+            throw new Error(
+              "Ride request cannot be assigned (Must be in PENDING state)",
+            );
+          }
 
-        const updatedRide = await tx.rideRequest.update({
-          where: { id },
-          data: {
-            providerId,
-            status: DispatchStatus.ACCEPTED,
-          },
-        });
-        await tx.providerProfile.update({
-          where: { id: providerId },
-          data: { isAvailable: false },
-        });
+          const updatedRide = await tx.rideRequest.update({
+            where: { id },
+            data: {
+              providerId,
+              status: DispatchStatus.ACCEPTED,
+            },
+          });
+          await tx.providerProfile.update({
+            where: { id: providerId },
+            data: { isAvailable: false },
+          });
 
-        await tx.auditLog.create({
-          data: {
-            userId: user.id,
-            action: `PROVIDER_ASSIGNED_${providerId}`,
-            entity: "RideRequest",
-            entityId: id,
-          },
-        });
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: `PROVIDER_ASSIGNED_${providerId}`,
+              entity: "RideRequest",
+              entityId: id,
+            },
+          });
 
-        return updatedRide;
-      });
+          return updatedRide;
+        },
+        {
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
 
       res.status(200).json({
         success: true,
@@ -270,57 +291,69 @@ router.patch(
       const user = (req as any).user;
       const { status } = req.body as { status: DispatchStatus };
 
-      const result = await prisma.$transaction(async (tx) => {
-        const currentRide = await tx.rideRequest.findUnique({ where: { id } });
-        if (!currentRide) throw new Error("Ride request not found");
-
-        const validTransitions: Record<DispatchStatus, DispatchStatus[]> = {
-          PENDING: [DispatchStatus.CANCELLED, DispatchStatus.ACCEPTED],
-          ACCEPTED: [DispatchStatus.EN_ROUTE, DispatchStatus.CANCELLED],
-          EN_ROUTE: [DispatchStatus.ARRIVED_AT_SCENE, DispatchStatus.CANCELLED],
-          ARRIVED_AT_SCENE: [
-            DispatchStatus.PATIENT_PICKED_UP,
-            DispatchStatus.CANCELLED,
-          ],
-          PATIENT_PICKED_UP: [
-            DispatchStatus.COMPLETED,
-            DispatchStatus.CANCELLED,
-          ],
-          COMPLETED: [],
-          CANCELLED: [],
-        };
-
-        if (!validTransitions[currentRide.status]?.includes(status)) {
-          throw new Error(
-            `Cannot transition ride status from ${currentRide.status} to ${status}`,
-          );
-        }
-
-        const updatedRide = await tx.rideRequest.update({
-          where: { id },
-          data: { status },
-        });
-        if (
-          (status === DispatchStatus.COMPLETED ||
-            status === DispatchStatus.CANCELLED) &&
-          updatedRide.providerId
-        ) {
-          await tx.providerProfile.update({
-            where: { id: updatedRide.providerId },
-            data: { isAvailable: true },
+      const result = await prisma.$transaction(
+        async (tx) => {
+          const currentRide = await tx.rideRequest.findUnique({
+            where: { id },
           });
-        }
+          if (!currentRide) throw new Error("Ride request not found");
 
-        await tx.auditLog.create({
-          data: {
-            userId: user.id,
-            action: `STATUS_UPDATED_TO_${status}`,
-            entity: "RideRequest",
-            entityId: id,
-          },
-        });
-        return updatedRide;
-      });
+          const validTransitions: Record<DispatchStatus, DispatchStatus[]> = {
+            PENDING: [DispatchStatus.CANCELLED, DispatchStatus.ACCEPTED],
+            ACCEPTED: [DispatchStatus.EN_ROUTE, DispatchStatus.CANCELLED],
+            EN_ROUTE: [
+              DispatchStatus.ARRIVED_AT_SCENE,
+              DispatchStatus.CANCELLED,
+            ],
+            ARRIVED_AT_SCENE: [
+              DispatchStatus.PATIENT_PICKED_UP,
+              DispatchStatus.CANCELLED,
+            ],
+            PATIENT_PICKED_UP: [
+              DispatchStatus.COMPLETED,
+              DispatchStatus.CANCELLED,
+            ],
+            COMPLETED: [],
+            CANCELLED: [],
+          };
+
+          if (!validTransitions[currentRide.status]?.includes(status)) {
+            throw new Error(
+              `Cannot transition ride status from ${currentRide.status} to ${status}`,
+            );
+          }
+
+          const updatedRide = await tx.rideRequest.update({
+            where: { id },
+            data: { status },
+          });
+
+          if (
+            (status === DispatchStatus.COMPLETED ||
+              status === DispatchStatus.CANCELLED) &&
+            updatedRide.providerId
+          ) {
+            await tx.providerProfile.update({
+              where: { id: updatedRide.providerId },
+              data: { isAvailable: true },
+            });
+          }
+
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: `STATUS_UPDATED_TO_${status}`,
+              entity: "RideRequest",
+              entityId: id,
+            },
+          });
+          return updatedRide;
+        },
+        {
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
 
       res.status(200).json({
         success: true,
@@ -343,45 +376,51 @@ router.patch(
       const user = (req as any).user;
       const { cancellationReason } = req.body;
 
-      const result = await prisma.$transaction(async (tx) => {
-        const ride = await tx.rideRequest.findFirst({
-          where: { id, customerId: user.id, deletedAt: null },
-        });
-
-        if (
-          !ride ||
-          ride.status === DispatchStatus.COMPLETED ||
-          ride.status === DispatchStatus.CANCELLED
-        ) {
-          throw new Error("Ride cannot be cancelled");
-        }
-
-        const updated = await tx.rideRequest.update({
-          where: { id },
-          data: {
-            status: DispatchStatus.CANCELLED,
-            cancellationReason: cancellationReason || "Cancelled by customer",
-          },
-        });
-
-        if (updated.providerId) {
-          await tx.providerProfile.update({
-            where: { id: updated.providerId },
-            data: { isAvailable: true },
+      const result = await prisma.$transaction(
+        async (tx) => {
+          const ride = await tx.rideRequest.findFirst({
+            where: { id, customerId: user.id, deletedAt: null },
           });
-        }
 
-        await tx.auditLog.create({
-          data: {
-            userId: user.id,
-            action: "RIDE_CANCELLED_BY_CUSTOMER",
-            entity: "RideRequest",
-            entityId: id,
-          },
-        });
+          if (
+            !ride ||
+            ride.status === DispatchStatus.COMPLETED ||
+            ride.status === DispatchStatus.CANCELLED
+          ) {
+            throw new Error("Ride cannot be cancelled");
+          }
 
-        return updated;
-      });
+          const updated = await tx.rideRequest.update({
+            where: { id },
+            data: {
+              status: DispatchStatus.CANCELLED,
+              cancellationReason: cancellationReason || "Cancelled by customer",
+            },
+          });
+
+          if (updated.providerId) {
+            await tx.providerProfile.update({
+              where: { id: updated.providerId },
+              data: { isAvailable: true },
+            });
+          }
+
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: "RIDE_CANCELLED_BY_CUSTOMER",
+              entity: "RideRequest",
+              entityId: id,
+            },
+          });
+
+          return updated;
+        },
+        {
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
 
       res.status(200).json({
         success: true,
@@ -414,15 +453,20 @@ router.delete(
         return;
       }
 
-      // (Atomic Transaction)
-      await prisma.$transaction(async (tx) => {
-        await tx.payment.deleteMany({
-          where: { rideRequestId: id },
-        });
-        await tx.rideRequest.delete({
-          where: { id },
-        });
-      });
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.payment.deleteMany({
+            where: { rideRequestId: id },
+          });
+          await tx.rideRequest.delete({
+            where: { id },
+          });
+        },
+        {
+          maxWait: 10000,
+          timeout: 20000,
+        },
+      );
 
       res.status(200).json({
         success: true,
