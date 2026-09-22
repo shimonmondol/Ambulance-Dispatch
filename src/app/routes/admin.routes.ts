@@ -38,7 +38,16 @@ router.get('/users', auth(Role.ADMIN), async (req: Request, res: Response, next:
   try {
     const users = await prisma.user.findMany({
       where: { deletedAt: null },
-      select: { id: true, name: true, email: true, phone: true, role: true, isVerified: true, createdAt: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        isVerified: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
     res.status(200).json({ success: true, message: 'All users fetched', data: users });
   } catch (err) {
@@ -46,15 +55,31 @@ router.get('/users', auth(Role.ADMIN), async (req: Request, res: Response, next:
   }
 });
 
-// User Status Toggle (Verify/Unverify)
+// User Status Toggle (Verify) - Password Hash Excluded
 router.patch('/users/:id/verify', auth(Role.ADMIN), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
     const user = await prisma.user.update({
       where: { id },
       data: { isVerified: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        isVerified: true,
+        deletedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
-    res.status(200).json({ success: true, message: 'User verified successfully', data: user });
+
+    res.status(200).json({
+      success: true,
+      message: 'User verified successfully',
+      data: user,
+    });
   } catch (err) {
     next(err);
   }

@@ -220,7 +220,7 @@ router.get(
   },
 );
 
-// Assign Provider to Ride
+// Assign Provider / Ambulance to Ride (Atomic Transaction)
 router.patch(
   "/:id/assign",
   auth(Role.ADMIN, Role.PROVIDER),
@@ -229,7 +229,7 @@ router.patch(
     try {
       const id = req.params.id as string;
       const user = (req as any).user;
-      const { providerId } = req.body;
+      const { ambulanceId, providerId: directProviderId } = req.body;
 
       const result = await prisma.$transaction(
         async (tx) => {
@@ -240,22 +240,59 @@ router.patch(
             );
           }
 
+          let targetProviderProfileId = directProviderId;
+
+          // ১. ambulanceId পাঠানো হলে সংশ্লিষ্ট অ্যাম্বুলেন্স রেকর্ড চেক করা
+          if (ambulanceId) {
+            const ambulance = await tx.ambulance.findUnique({
+              where: { id: ambulanceId },
+              select: { id: true, providerId: true },
+            });
+
+            if (!ambulance) {
+              throw new Error("Ambulance not found with the provided ID");
+            }
+
+            if (ambulance.providerId) {
+              targetProviderProfileId = ambulance.providerId;
+            }
+          }
+
+          // ২. যদি অ্যাম্বুলেন্সে providerId না থাকে বা সরাসরি providerId না দেওয়া থাকে,
+          // কিন্তু রিকোয়েস্টকারী নিজে PROVIDER রোলে লগইন করা থাকে
+          if (!targetProviderProfileId && user.role === Role.PROVIDER) {
+            const providerProfile = await tx.providerProfile.findUnique({
+              where: { userId: user.id },
+              select: { id: true },
+            });
+            if (providerProfile) {
+              targetProviderProfileId = providerProfile.id;
+            }
+          }
+
+          if (!targetProviderProfileId) {
+            throw new Error(
+              "Could not determine a valid provider profile",
+            );
+          }
+
           const updatedRide = await tx.rideRequest.update({
             where: { id },
             data: {
-              providerId,
+              providerId: targetProviderProfileId,
               status: DispatchStatus.ACCEPTED,
             },
           });
+
           await tx.providerProfile.update({
-            where: { id: providerId },
+            where: { id: targetProviderProfileId },
             data: { isAvailable: false },
           });
 
           await tx.auditLog.create({
             data: {
               userId: user.id,
-              action: `PROVIDER_ASSIGNED_${providerId}`,
+              action: `PROVIDER_ASSIGNED_${targetProviderProfileId}`,
               entity: "RideRequest",
               entityId: id,
             },
@@ -271,8 +308,11 @@ router.patch(
 
       res.status(200).json({
         success: true,
-        message: "Provider assigned successfully",
-        data: result,
+        message: "Ambulance assigned and ride accepted",
+        data: {
+          id: result.id,
+          status: result.status,
+        },
       });
     } catch (err: any) {
       res.status(400).json({ success: false, message: err.message });

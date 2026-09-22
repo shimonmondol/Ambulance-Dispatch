@@ -19,7 +19,6 @@ app.use(cors());
 app.use(
   express.json({
     verify: (req: any, _res, buf) => {
-      // যদি রিকোয়েস্ট stripe webhook রাউটে আসে তবে raw buffer রেখে দেওয়া হয়
       if (req.originalUrl.includes('/webhook')) {
         req.rawBody = buf;
       }

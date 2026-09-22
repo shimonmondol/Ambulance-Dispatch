@@ -11,7 +11,98 @@ import { stripe, StripeService } from "../services/stripe.service.js";
 
 const router = Router();
 
-// Initiate Stripe Checkout Session (CUSTOMER only)
+// 1. Pay for Ride (Direct / Manual Payment)
+router.post(
+  "/:id/pay",
+  auth(Role.CUSTOMER, Role.ADMIN),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+      const user = (req as any).user;
+
+      // পেমেন্ট রেকর্ড খুঁজে বের করা (id সরাসরি paymentId অথবা rideRequestId হতে পারে)
+      const payment = await prisma.payment.findFirst({
+        where: {
+          OR: [{ id }, { rideRequestId: id }],
+          ...(user.role === Role.CUSTOMER && {
+            rideRequest: { customerId: user.id },
+          }),
+        },
+        include: { rideRequest: true },
+      });
+
+      if (!payment) {
+        res.status(404).json({
+          success: false,
+          message: "Payment or Ride request not found",
+        });
+        return;
+      }
+
+      if (payment.status === PaymentStatus.PAID) {
+        res.status(400).json({
+          success: false,
+          message: "Ride has already been paid for",
+        });
+        return;
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const updatedPayment = await tx.payment.update({
+          where: { id: payment.id },
+          data: {
+            status: PaymentStatus.PAID,
+            provider: payment.provider || "CASH",
+          },
+        });
+
+        const updatedRide = await tx.rideRequest.update({
+          where: { id: payment.rideRequestId },
+          data: { status: DispatchStatus.COMPLETED },
+        });
+
+        // রাইড কমপ্লিট হলে অ্যাসাইন করা অ্যাম্বুলেন্সকে পুনরায় প্রস্তুত (isOperational) করা
+        if (updatedRide.providerId) {
+          const ambulance = await tx.ambulance.findFirst({
+            where: { providerId: updatedRide.providerId },
+          });
+          if (ambulance) {
+            await tx.ambulance.update({
+              where: { id: ambulance.id },
+              data: { isOperational: true },
+            });
+          }
+
+          await tx.providerProfile.update({
+            where: { id: updatedRide.providerId },
+            data: { isAvailable: true },
+          });
+        }
+
+        await tx.auditLog.create({
+          data: {
+            userId: user.id,
+            entity: "Payment",
+            entityId: payment.id,
+            action: "MANUAL_PAYMENT_MARKED_AS_PAID",
+          },
+        });
+
+        return updatedPayment;
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Payment completed successfully",
+        data: result,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// 2. Initiate Stripe Checkout Session (CUSTOMER only)
 router.post(
   "/create-checkout-session/:requestId",
   auth(Role.CUSTOMER),
@@ -40,7 +131,6 @@ router.post(
         return;
       }
 
-      // Stripe Checkout Session
       const session = await StripeService.createCheckoutSession({
         amount: ride.fareAmount,
         rideRequestId: ride.id,
@@ -79,7 +169,7 @@ router.post(
   },
 );
 
-// Secure Stripe Webhook Handler (No Auth middleware - Signature verified)
+// 3. Secure Stripe Webhook Handler (No Auth middleware - Signature verified)
 router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
   const sig = req.headers["stripe-signature"] as string;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -132,6 +222,11 @@ router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
                 data: { isOperational: true },
               });
             }
+
+            await tx.providerProfile.update({
+              where: { id: ride.providerId },
+              data: { isAvailable: true },
+            });
           }
 
           await tx.auditLog.create({
@@ -157,7 +252,7 @@ router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
   res.status(200).json({ received: true });
 });
 
-// Get Payment Status By Request ID
+// 4. Get Payment Status By Request ID
 router.get(
   "/:requestId/status",
   auth(Role.ADMIN, Role.CUSTOMER),
@@ -195,20 +290,30 @@ router.get(
   },
 );
 
-// All Payments Ledger (Admin view)
+// 5. Payment History / Ledger (CUSTOMER sees own history, ADMIN sees all)
 router.get(
   "/",
-  auth(Role.ADMIN),
+  auth(Role.ADMIN, Role.CUSTOMER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const user = (req as any).user;
+
+      const whereCondition =
+        user.role === Role.CUSTOMER
+          ? { rideRequest: { customerId: user.id } }
+          : {};
+
       const payments = await prisma.payment.findMany({
+        where: whereCondition,
         orderBy: { createdAt: "desc" },
         include: {
           rideRequest: {
             select: {
+              id: true,
               customerId: true,
               pickupAddress: true,
               destination: true,
+              status: true,
             },
           },
         },
@@ -216,8 +321,45 @@ router.get(
 
       res.status(200).json({
         success: true,
-        message: "All payments retrieved successfully",
+        message: "Payment history retrieved successfully",
         data: payments,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// 6. Get Single Payment Details by ID (Supports payment ID or rideRequest ID)
+router.get(
+  "/:id",
+  auth(Role.ADMIN, Role.CUSTOMER, Role.PROVIDER),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+      const user = (req as any).user;
+
+      const payment = await prisma.payment.findFirst({
+        where: {
+          OR: [{ id }, { rideRequestId: id }],
+          ...(user.role === Role.CUSTOMER && {
+            rideRequest: { customerId: user.id },
+          }),
+        },
+        include: {
+          rideRequest: true,
+        },
+      });
+
+      if (!payment) {
+        res.status(404).json({ success: false, message: "Payment not found" });
+        return;
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Payment retrieved successfully",
+        data: payment,
       });
     } catch (err) {
       next(err);
