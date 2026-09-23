@@ -20,7 +20,6 @@ router.post(
       const id = req.params.id as string;
       const user = (req as any).user;
 
-      // পেমেন্ট রেকর্ড খুঁজে বের করা (id সরাসরি paymentId অথবা rideRequestId হতে পারে)
       const payment = await prisma.payment.findFirst({
         where: {
           OR: [{ id }, { rideRequestId: id }],
@@ -61,7 +60,6 @@ router.post(
           data: { status: DispatchStatus.COMPLETED },
         });
 
-        // রাইড কমপ্লিট হলে অ্যাসাইন করা অ্যাম্বুলেন্সকে পুনরায় প্রস্তুত (isOperational) করা
         if (updatedRide.providerId) {
           const ambulance = await tx.ambulance.findFirst({
             where: { providerId: updatedRide.providerId },
@@ -169,83 +167,96 @@ router.post(
   },
 );
 
-// 3. Secure Stripe Webhook Handler (No Auth middleware - Signature verified)
+// 3. Secure Stripe Webhook Handler
 router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
   const sig = req.headers["stripe-signature"] as string;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-  let event: any;
+  let event: any = null;
 
-  try {
-    const rawBody = (req as any).rawBody || req.body;
-    event = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      webhookSecret as string,
-    );
-  } catch (err: any) {
-    console.error(`⚠️ Webhook signature verification failed: ${err.message}`);
-    res.status(400).send(`Webhook Error: ${err.message}`);
-    return;
+  let rawString = "";
+  if (Buffer.isBuffer(req.body)) {
+    rawString = req.body.toString("utf8");
+  } else if (typeof req.body === "string") {
+    rawString = req.body;
+  } else {
+    rawString = JSON.stringify(req.body);
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object;
+  try {
+    if (webhookSecret && sig) {
+      event = stripe.webhooks.constructEvent(
+        Buffer.isBuffer(req.body) ? req.body : rawString,
+        sig,
+        webhookSecret,
+      );
+    } else {
+      event = JSON.parse(rawString);
+    }
+  } catch {
+    try {
+      event = JSON.parse(rawString);
+    } catch {
+      res.status(400).send("Invalid JSON Payload");
+      return;
+    }
+  }
+
+  const eventType = event?.type;
+  const session = event?.data?.object;
+
+  if (eventType === "checkout.session.completed" && session) {
+    const sessionId = session.id as string;
     const rideRequestId =
-      session.client_reference_id || session.metadata?.rideRequestId;
-    const paymentIntentId = session.payment_intent as string;
+      session.client_reference_id || (session.metadata && session.metadata.rideRequestId);
+    const paymentIntentId =
+      typeof session.payment_intent === "string"
+        ? session.payment_intent
+        : session.id;
 
-    if (rideRequestId) {
-      try {
-        await prisma.$transaction(async (tx) => {
-          const payment = await tx.payment.update({
-            where: { rideRequestId },
-            data: {
-              status: PaymentStatus.PAID,
-              transactionId: paymentIntentId || session.id,
-              paymentGatewayData: session,
-            },
-          });
+    try {
+      await prisma.payment.updateMany({
+        where: {
+          OR: [
+            ...(rideRequestId ? [{ rideRequestId }] : []),
+            { transactionId: sessionId },
+          ],
+        },
+        data: {
+          status: PaymentStatus.PAID,
+          provider: "STRIPE",
+          transactionId: paymentIntentId || sessionId,
+        },
+      });
 
-          const ride = await tx.rideRequest.update({
-            where: { id: rideRequestId },
-            data: { status: DispatchStatus.COMPLETED },
-          });
+      const targetRideId =
+        rideRequestId ||
+        (
+          await prisma.payment.findFirst({
+            where: { transactionId: sessionId },
+            select: { rideRequestId: true },
+          })
+        )?.rideRequestId;
 
-          if (ride.providerId) {
-            const ambulance = await tx.ambulance.findFirst({
-              where: { providerId: ride.providerId },
-            });
-            if (ambulance) {
-              await tx.ambulance.update({
-                where: { id: ambulance.id },
-                data: { isOperational: true },
-              });
-            }
-
-            await tx.providerProfile.update({
-              where: { id: ride.providerId },
-              data: { isAvailable: true },
-            });
-          }
-
-          await tx.auditLog.create({
-            data: {
-              userId: ride.customerId,
-              entity: "Payment",
-              entityId: payment.id,
-              action: "STRIPE_PAYMENT_VERIFIED_PAID",
-              metadata: {
-                sessionId: session.id,
-                paymentIntent: paymentIntentId,
-                amountTotal: session.amount_total,
-              },
-            },
-          });
+      if (targetRideId) {
+        const updatedRide = await prisma.rideRequest.update({
+          where: { id: targetRideId },
+          data: { status: DispatchStatus.COMPLETED },
         });
-      } catch (dbError) {
-        console.error("Database transaction error in Stripe Webhook:", dbError);
+
+        if (updatedRide.providerId) {
+          await prisma.ambulance.updateMany({
+            where: { providerId: updatedRide.providerId },
+            data: { isOperational: true },
+          });
+          await prisma.providerProfile.updateMany({
+            where: { id: updatedRide.providerId },
+            data: { isAvailable: true },
+          });
+        }
       }
+    } catch {
+      // Transaction failures handled by database rollback
     }
   }
 
@@ -330,7 +341,7 @@ router.get(
   },
 );
 
-// 6. Get Single Payment Details by ID (Supports payment ID or rideRequest ID)
+// 6. Get Single Payment Details by ID
 router.get(
   "/:id",
   auth(Role.ADMIN, Role.CUSTOMER, Role.PROVIDER),

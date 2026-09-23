@@ -242,7 +242,6 @@ router.patch(
 
           let targetProviderProfileId = directProviderId;
 
-          // ১. ambulanceId পাঠানো হলে সংশ্লিষ্ট অ্যাম্বুলেন্স রেকর্ড চেক করা
           if (ambulanceId) {
             const ambulance = await tx.ambulance.findUnique({
               where: { id: ambulanceId },
@@ -258,8 +257,6 @@ router.patch(
             }
           }
 
-          // ২. যদি অ্যাম্বুলেন্সে providerId না থাকে বা সরাসরি providerId না দেওয়া থাকে,
-          // কিন্তু রিকোয়েস্টকারী নিজে PROVIDER রোলে লগইন করা থাকে
           if (!targetProviderProfileId && user.role === Role.PROVIDER) {
             const providerProfile = await tx.providerProfile.findUnique({
               where: { userId: user.id },
@@ -473,7 +470,7 @@ router.patch(
   },
 );
 
-// Hard Delete Ride (Admin Only)
+// Delete Ride (Admin Only)
 router.delete(
   "/:id",
   auth(Role.ADMIN),

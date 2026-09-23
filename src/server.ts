@@ -16,15 +16,14 @@ app.use(
 );
 app.use(cors());
 
-app.use(
-  express.json({
-    verify: (req: any, _res, buf) => {
-      if (req.originalUrl.includes('/webhook')) {
-        req.rawBody = buf;
-      }
-    },
-  })
-);
+app.use((req, res, next) => {
+  if (req.originalUrl.includes('/webhook')) {
+    express.raw({ type: '*/*' })(req, res, next);
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 app.use(express.urlencoded({ extended: true }));
 
 app.get('/', (req: Request, res: Response) => {
@@ -60,13 +59,8 @@ app.use(globalErrorHandler);
 async function main() {
   try {
     await prisma.$connect();
-    console.log('✅ Database connected successfully');
-
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
-  } catch (error) {
-    console.error('❌ Failed to connect database:', error);
+    app.listen(PORT);
+  } catch {
     await prisma.$disconnect();
     process.exit(1);
   }

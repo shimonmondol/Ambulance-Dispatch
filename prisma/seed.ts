@@ -10,7 +10,7 @@ const FLEET_TEMPLATES = [
 ];
 
 async function main() {
-  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@dispatch.com';
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@gmail.com';
   const adminPassword = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD || 'Admin@123456', 10);
 
   await prisma.user.upsert({
