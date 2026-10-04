@@ -3,6 +3,16 @@ import { Role, type User } from '@prisma/client';
 import { prisma } from '../../prisma.js';
 import { jwtHelpers } from '../utils/jwtHelpers.js';
 
+// Custom AppError class to pass explicit status code to globalErrorHandler
+class AppError extends Error {
+  statusCode: number;
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
 const registerUser = async (payload: {
   name: string;
   email: string;
@@ -18,7 +28,7 @@ const registerUser = async (payload: {
   });
 
   if (existingUser) {
-    throw new Error('User with this email or phone already exists');
+    throw new AppError(409, 'User with this email or phone already exists');
   }
 
   const hashedPassword = await bcrypt.hash(payload.password, 10);
@@ -37,7 +47,7 @@ const registerUser = async (payload: {
 
     if (userRole === Role.PROVIDER) {
       if (!payload.licenseNumber) {
-        throw new Error('License number is required for Provider registration');
+        throw new AppError(400, 'License number is required for Provider registration');
       }
       await tx.providerProfile.create({
         data: {
@@ -53,18 +63,42 @@ const registerUser = async (payload: {
 };
 
 const loginUser = async (payload: { email: string; password: string }) => {
+  console.log('\n================== [LOGIN ATTEMPT DEBUG] ==================');
+  console.log('1. Payload received -> Email:', payload.email, '| Password typed:', payload.password);
+
+  // ১. ইউজারকে ডাটাবেসে খোঁজা
   const user = await prisma.user.findUnique({
     where: { email: payload.email },
   });
 
   if (!user || user.deletedAt) {
-    throw new Error('User not found or account deactivated');
+    console.log('❌ User not found in database or account deactivated');
+    console.log('===========================================================\n');
+    throw new AppError(404, 'User not found or account deactivated');
   }
 
-  const isPasswordValid = await bcrypt.compare(payload.password, user.password);
-  if (!isPasswordValid) {
-    throw new Error('Invalid email or password');
+  console.log('2. User found -> ID:', user.id, '| Role:', user.role);
+  console.log('3. Password in DB (Hashed/Raw):', user.password);
+
+  // ২. পাসওয়ার্ড যাচাই (Bcrypt Compare)
+  let isPasswordValid = false;
+  try {
+    isPasswordValid = await bcrypt.compare(payload.password, user.password);
+  } catch (bcryptErr) {
+    console.log('⚠️ bcrypt.compare failed to execute (DB password format might not be a valid bcrypt hash):', bcryptErr);
   }
+
+  console.log('4. bcrypt.compare result:', isPasswordValid);
+
+  // ৩. যদি পাসওয়ার্ড না মেলে, সাথে সাথে 401 এরর থ্রো করবে
+  if (!isPasswordValid) {
+    console.log('⛔ PASSWORDS DO NOT MATCH! THROWING 401 ERROR NOW.');
+    console.log('===========================================================\n');
+    throw new AppError(401, 'Invalid email or password');
+  }
+
+  console.log('✅ Passwords matched! Generating JWT Tokens...');
+  console.log('===========================================================\n');
 
   const jwtPayload = { id: user.id, email: user.email, role: user.role };
 
@@ -95,4 +129,4 @@ const loginUser = async (payload: { email: string; password: string }) => {
 export const AuthService = {
   registerUser,
   loginUser,
-};
+};      
