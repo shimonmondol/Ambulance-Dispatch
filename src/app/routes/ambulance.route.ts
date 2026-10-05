@@ -10,43 +10,73 @@ import { auth } from "../middlewares/auth.js";
 
 const router = Router();
 
-// Create (ADMIN only)
+// ১. Create (ADMIN only - Protected)
 router.post(
   "/",
   auth(Role.ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { registrationNo, type } = req.body;
+      const { name, registrationNo, type } = req.body;
+
+      // Type validation check
+      if (type && !Object.values(AmbulanceType).includes(type)) {
+        res.status(400).json({
+          success: false,
+          message: `Invalid ambulance type. Allowed types: ${Object.values(AmbulanceType).join(", ")}`,
+          errors: [],
+        });
+        return;
+      }
+
       const ambulance = await prisma.ambulance.create({
-        data: { registrationNo, type: type as AmbulanceType },
+        data: {
+          name: name ? String(name).trim() : null, // undefined এর বদলে null
+          registrationNo,
+          type: type as AmbulanceType,
+        },
       });
+
       res.status(201).json({
         success: true,
         message: "Ambulance Created Successfully",
         data: ambulance,
       });
-    } catch (err) {
+    } catch (err: any) {
+      if (err.code === "P2002") {
+        res.status(400).json({
+          success: false,
+          message: "Registration number already exists. Please choose a unique one.",
+          errors: [err.message],
+        });
+        return;
+      }
       next(err);
     }
   },
 );
 
-// List All (Filtered & Non-deleted)
+// ২. List All (পাবলিক)
 router.get(
   "/",
-  auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { type, isOperational } = req.query;
+      const { type, isOperational, search } = req.query;
       const filter: any = { deletedAt: null };
 
       if (type) filter.type = type as AmbulanceType;
       if (isOperational !== undefined)
         filter.isOperational = isOperational === "true";
+      if (search) {
+        filter.OR = [
+          { name: { contains: String(search), mode: "insensitive" } },
+          { registrationNo: { contains: String(search), mode: "insensitive" } },
+        ];
+      }
 
       const ambulances = await prisma.ambulance.findMany({
         where: filter,
         include: { provider: true },
+        orderBy: { createdAt: "desc" },
       });
 
       res.status(200).json({
@@ -60,10 +90,9 @@ router.get(
   },
 );
 
-// Get By ID
+// ৩. Get By ID (পাবলিক)
 router.get(
   "/:id",
-  auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
   async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id as string;
@@ -81,7 +110,7 @@ router.get(
 
       res.status(200).json({
         success: true,
-        message: "Ambulance Details Successfully",
+        message: "Ambulance Details Retrieved Successfully",
         data: ambulance,
       });
     } catch (err) {
@@ -90,7 +119,7 @@ router.get(
   },
 );
 
-// Update (ADMIN only)
+// ৪. Update (ADMIN only - Protected)
 router.patch(
   "/:id",
   auth(Role.ADMIN),
@@ -107,7 +136,7 @@ router.patch(
         return;
       }
 
-      const { registrationNo, type, isOperational } = req.body;
+      const { name, registrationNo, type, isOperational } = req.body;
 
       const existingAmbulance = await prisma.ambulance.findFirst({
         where: { id, deletedAt: null },
@@ -140,12 +169,25 @@ router.patch(
         }
       }
 
+      if (type && !Object.values(AmbulanceType).includes(type)) {
+        res.status(400).json({
+          success: false,
+          message: `Invalid ambulance type. Allowed types: ${Object.values(AmbulanceType).join(", ")}`,
+          errors: [],
+        });
+        return;
+      }
+
       const updateData: {
+        name?: string | null;
         registrationNo?: string;
         type?: AmbulanceType;
         isOperational?: boolean;
       } = {};
 
+      if (name !== undefined) {
+        updateData.name = name ? String(name).trim() : null;
+      }
       if (
         registrationNo !== undefined &&
         registrationNo !== existingAmbulance.registrationNo
@@ -181,23 +223,27 @@ router.patch(
   },
 );
 
-// Delete (ADMIN only)
-router.delete('/:id', auth(Role.ADMIN), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const id = req.params.id as string;
+// ৫. Delete (ADMIN only - Protected)
+router.delete(
+  "/:id",
+  auth(Role.ADMIN),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
 
-    const deleted = await prisma.ambulance.delete({
-      where: { id },
-    });
+      const deleted = await prisma.ambulance.delete({
+        where: { id },
+      });
 
-    res.status(200).json({
-      success: true,
-      message: 'Ambulance Delete Successfully',
-      data: deleted,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
+      res.status(200).json({
+        success: true,
+        message: "Ambulance Deleted Successfully",
+        data: deleted,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export const ambulanceRoutes = router;
