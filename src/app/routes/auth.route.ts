@@ -30,7 +30,7 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
       });
 
       if (userRole === Role.PROVIDER) {
-        if (!licenseNumber) throw new Error('License number is required for Provider registration');
+        if (!licenseNumber) throw new Error('Provider Already Registered');
         await tx.providerProfile.create({
           data: { userId: newUser.id, licenseNumber },
         });

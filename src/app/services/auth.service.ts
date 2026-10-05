@@ -1,7 +1,7 @@
-import bcrypt from 'bcrypt';
-import { Role, type User } from '@prisma/client';
-import { prisma } from '../../prisma.js';
-import { jwtHelpers } from '../utils/jwtHelpers.js';
+import bcrypt from "bcrypt";
+import { Role, type User } from "@prisma/client";
+import { prisma } from "../../prisma.js";
+import { jwtHelpers } from "../utils/jwtHelpers.js";
 
 // Custom AppError class to pass explicit status code to globalErrorHandler
 class AppError extends Error {
@@ -16,50 +16,48 @@ class AppError extends Error {
 const registerUser = async (payload: {
   name: string;
   email: string;
-  phone: string;
   password: string;
   role?: Role;
-  licenseNumber?: string;
-}): Promise<Omit<User, 'password'>> => {
-  const existingUser = await prisma.user.findFirst({
-    where: {
-      OR: [{ email: payload.email }, { phone: payload.phone }],
-    },
-  });
-
-  if (existingUser) {
-    throw new AppError(409, 'User with this email or phone already exists');
-  }
-
-  const hashedPassword = await bcrypt.hash(payload.password, 10);
-  const userRole = payload.role || Role.CUSTOMER;
-
-  return prisma.$transaction(async (tx) => {
-    const newUser = await tx.user.create({
-      data: {
-        name: payload.name,
-        email: payload.email,
-        phone: payload.phone,
-        password: hashedPassword,
+  phone?: string;
+}): Promise<Omit<User, "password">> => {
+  const userRole = (payload.role || "CUSTOMER").toUpperCase() as Role;
+  if (userRole === Role.PROVIDER || userRole === Role.ADMIN) {
+    const existingRoleUser = await prisma.user.findFirst({
+      where: {
         role: userRole,
       },
     });
 
-    if (userRole === Role.PROVIDER) {
-      if (!payload.licenseNumber) {
-        throw new AppError(400, 'License number is required for Provider registration');
-      }
-      await tx.providerProfile.create({
-        data: {
-          userId: newUser.id,
-          licenseNumber: payload.licenseNumber,
-        },
-      });
+    if (existingRoleUser) {
+      const roleTitle = userRole === Role.PROVIDER ? "Provider" : "Admin";
+      throw new AppError(
+        400,
+        `A ${roleTitle} is already registered. Only 1 ${roleTitle} account is allowed.`,
+      );
     }
+  }
 
-    const { password, ...result } = newUser;
-    return result as Omit<User, 'password'>;
+  const existingEmail = await prisma.user.findUnique({
+    where: { email: payload.email },
   });
+
+  if (existingEmail) {
+    throw new AppError(409, "User with this email already exists");
+  }
+
+  const hashedPassword = await bcrypt.hash(payload.password, 10);
+  const newUser = await prisma.user.create({
+    data: {
+      name: payload.name,
+      email: payload.email,
+      phone: payload.phone || "01700000000",
+      password: hashedPassword,
+      role: userRole,
+    },
+  });
+
+  const { password, ...result } = newUser;
+  return result as Omit<User, "password">;
 };
 
 const loginUser = async (payload: { email: string; password: string }) => {
@@ -68,13 +66,13 @@ const loginUser = async (payload: { email: string; password: string }) => {
   });
 
   if (!user || user.deletedAt) {
-    throw new AppError(404, 'User not found or account deactivated');
+    throw new AppError(404, "User not found or account deactivated");
   }
 
   const isPasswordValid = await bcrypt.compare(payload.password, user.password);
 
   if (!isPasswordValid) {
-    throw new AppError(401, 'Invalid email or password');
+    throw new AppError(401, "Invalid email or password");
   }
 
   const normalizedRole = user.role.toLowerCase();
@@ -88,13 +86,13 @@ const loginUser = async (payload: { email: string; password: string }) => {
   const accessToken = jwtHelpers.generateToken(
     jwtPayload,
     process.env.JWT_ACCESS_SECRET as string,
-    '1d'
+    "1d",
   );
 
   const refreshToken = jwtHelpers.generateToken(
     jwtPayload,
     process.env.JWT_REFRESH_SECRET as string,
-    '7d'
+    "7d",
   );
 
   return {
