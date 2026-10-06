@@ -16,9 +16,8 @@ router.post(
   auth(Role.ADMIN),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, registrationNo, type } = req.body;
+      const { name, image, registrationNo, type } = req.body;
 
-      // Type validation check
       if (type && !Object.values(AmbulanceType).includes(type)) {
         res.status(400).json({
           success: false,
@@ -30,7 +29,8 @@ router.post(
 
       const ambulance = await prisma.ambulance.create({
         data: {
-          name: name ? String(name).trim() : null, // undefined এর বদলে null
+          name: name ? String(name).trim() : null,
+          image: image ? String(image).trim() : null, // image ফিল্ড যুক্ত করা হলো
           registrationNo,
           type: type as AmbulanceType,
         },
@@ -136,7 +136,7 @@ router.patch(
         return;
       }
 
-      const { name, registrationNo, type, isOperational } = req.body;
+      const { name, image, registrationNo, type, isOperational } = req.body;
 
       const existingAmbulance = await prisma.ambulance.findFirst({
         where: { id, deletedAt: null },
@@ -180,6 +180,7 @@ router.patch(
 
       const updateData: {
         name?: string | null;
+        image?: string | null;
         registrationNo?: string;
         type?: AmbulanceType;
         isOperational?: boolean;
@@ -187,6 +188,9 @@ router.patch(
 
       if (name !== undefined) {
         updateData.name = name ? String(name).trim() : null;
+      }
+      if (image !== undefined) {
+        updateData.image = image ? String(image).trim() : null;
       }
       if (
         registrationNo !== undefined &&

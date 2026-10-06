@@ -78,6 +78,7 @@ model ProviderProfile {
 model Ambulance {
   id             String           @id @default(uuid())
   name           String?
+  image          String?
   registrationNo String           @unique
   type           AmbulanceType
   providerId     String?          @unique
