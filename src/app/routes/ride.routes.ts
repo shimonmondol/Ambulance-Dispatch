@@ -17,7 +17,7 @@ import { calculatePagination } from "../utils/paginationHelper.js";
 
 const router = Router();
 
-// Create Ride Request (CUSTOMER only)
+// 1. Create Ride Request (CUSTOMER only)
 router.post(
   "/",
   auth(Role.CUSTOMER),
@@ -26,6 +26,7 @@ router.post(
     try {
       const user = (req as any).user;
       const {
+        ambulanceId,
         pickupLocation,
         dropLocation,
         pickupAddress,
@@ -33,15 +34,34 @@ router.post(
         pickupLat,
         pickupLng,
         ambulanceType,
+        contactNumber,
       } = req.body;
 
       const resolvedPickupAddress = (pickupLocation || pickupAddress) as string;
       const resolvedDestination = (dropLocation || destination) as string;
-
       const parsedPickupLat = Number(pickupLat);
       const parsedPickupLng = Number(pickupLng);
+      let resolvedBaseFare = 1500.0;
+      let targetAmbulanceType = ambulanceType || "BASIC_LIFE_SUPPORT";
+      let assignedProviderId: string | null = null;
 
-      const baseFare = 1200.0;
+      if (ambulanceId) {
+        const selectedAmbulance = await prisma.ambulance.findUnique({
+          where: { id: ambulanceId },
+        });
+
+        if (selectedAmbulance) {
+          targetAmbulanceType = selectedAmbulance.type;
+
+          if ((selectedAmbulance as any).baseFare) {
+            resolvedBaseFare = Number((selectedAmbulance as any).baseFare);
+          }
+
+          if (selectedAmbulance.providerId) {
+            assignedProviderId = selectedAmbulance.providerId;
+          }
+        }
+      }
 
       const result = await prisma.$transaction(
         async (tx) => {
@@ -52,18 +72,26 @@ router.post(
               destination: resolvedDestination,
               pickupLat: !isNaN(parsedPickupLat) ? parsedPickupLat : 23.8103,
               pickupLng: !isNaN(parsedPickupLng) ? parsedPickupLng : 90.4125,
-              ambulanceType: ambulanceType || "ICU",
+              ambulanceType: targetAmbulanceType,
               status: DispatchStatus.PENDING,
-              fareAmount: baseFare,
+              fareAmount: resolvedBaseFare,
+              ...(assignedProviderId ? { providerId: assignedProviderId } : {}),
               payment: {
                 create: {
-                  amount: baseFare,
+                  amount: resolvedBaseFare,
                   status: PaymentStatus.UNPAID,
                   provider: "CASH",
                 },
               },
             },
             include: {
+              customer: { select: { id: true, name: true, phone: true } },
+              provider: {
+                include: {
+                  ambulance: true,
+                  user: { select: { name: true, phone: true } },
+                },
+              },
               payment: true,
             },
           });
@@ -95,8 +123,7 @@ router.post(
     }
   },
 );
-
-// List Rides with Pagination, Filtering & Sorting
+// 2. List Rides (Pagination, Filtering, Sorting)
 router.get(
   "/",
   auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
@@ -104,11 +131,12 @@ router.get(
     try {
       const user = (req as any).user;
       const { status, searchTerm, page, limit, sortBy, sortOrder } = req.query;
+
       const pagination = calculatePagination({
         page: page as string,
         limit: limit as string,
         sortBy: (sortBy as string) || "createdAt",
-        sortOrder: sortOrder as any,
+        sortOrder: (sortOrder as any) || "desc",
       });
 
       const andConditions: any[] = [{ deletedAt: null }];
@@ -122,6 +150,7 @@ router.get(
           andConditions.push({ providerId: profile.id });
         }
       }
+
       if (status) {
         andConditions.push({ status: status as DispatchStatus });
       }
@@ -146,6 +175,7 @@ router.get(
       }
 
       const whereConditions = { AND: andConditions };
+
       const [rides, total] = await Promise.all([
         prisma.rideRequest.findMany({
           where: whereConditions,
@@ -153,7 +183,7 @@ router.get(
           take: pagination.limit,
           orderBy: { [pagination.sortBy]: pagination.sortOrder },
           include: {
-            customer: { select: { name: true, phone: true } },
+            customer: { select: { id: true, name: true, phone: true } },
             provider: {
               include: {
                 user: { select: { name: true, phone: true } },
@@ -183,7 +213,7 @@ router.get(
   },
 );
 
-// Get Single Ride Details
+// 3. Get Single Ride Details
 router.get(
   "/:id",
   auth(Role.ADMIN, Role.PROVIDER, Role.CUSTOMER),
@@ -205,22 +235,25 @@ router.get(
       });
 
       if (!ride) {
-        res
-          .status(404)
-          .json({ success: false, message: "Ride request not found" });
+        res.status(404).json({
+          success: false,
+          message: "Ride request not found",
+        });
         return;
       }
 
-      res
-        .status(200)
-        .json({ success: true, message: "Ride details retrieved", data: ride });
+      res.status(200).json({
+        success: true,
+        message: "Ride details retrieved",
+        data: ride,
+      });
     } catch (err) {
       next(err);
     }
   },
 );
 
-// Assign Provider / Ambulance to Ride (Atomic Transaction)
+// 4. Assign Provider / Ambulance to Ride
 router.patch(
   "/:id/assign",
   auth(Role.ADMIN, Role.PROVIDER),
@@ -268,9 +301,7 @@ router.patch(
           }
 
           if (!targetProviderProfileId) {
-            throw new Error(
-              "Could not determine a valid provider profile",
-            );
+            throw new Error("Could not determine a valid provider profile");
           }
 
           const updatedRide = await tx.rideRequest.update({
@@ -317,7 +348,7 @@ router.patch(
   },
 );
 
-// Update Ride Status Lifecycle
+// 5. Update Ride Status Lifecycle
 router.patch(
   "/:id/status",
   auth(Role.ADMIN, Role.PROVIDER),
@@ -403,7 +434,7 @@ router.patch(
   },
 );
 
-// Cancel Ride Request (Customer)
+// 6. Cancel Ride Request (Customer)
 router.patch(
   "/:id/cancel",
   auth(Role.CUSTOMER),
@@ -412,7 +443,6 @@ router.patch(
       const id = req.params.id as string;
       const user = (req as any).user;
       const { cancellationReason } = req.body;
-
       const result = await prisma.$transaction(
         async (tx) => {
           const ride = await tx.rideRequest.findFirst({
@@ -470,7 +500,7 @@ router.patch(
   },
 );
 
-// Delete Ride (Admin Only)
+// 7. Delete Ride (Admin Only)
 router.delete(
   "/:id",
   auth(Role.ADMIN),
