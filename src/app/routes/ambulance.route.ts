@@ -91,33 +91,35 @@ router.get(
 );
 
 // ৩. Get By ID (পাবলিক)
-router.get(
-  "/:id",
-  async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
-    try {
-      const id = req.params.id as string;
-      const ambulance = await prisma.ambulance.findFirst({
-        where: { id, deletedAt: null },
-        include: { provider: true },
-      });
+router.get("/:id", async (req: Request<{ id: string }>, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const ambulance = await prisma.ambulance.findFirst({
+      where: { 
+        id, 
+        deletedAt: null 
+      },
+      include: { 
+        provider: true 
+      },
+    });
 
-      if (!ambulance) {
-        res
-          .status(404)
-          .json({ success: false, message: "Ambulance not found", errors: [] });
-        return;
-      }
-
-      res.status(200).json({
-        success: true,
-        message: "Ambulance Details Retrieved Successfully",
-        data: ambulance,
+    if (!ambulance) {
+      return res.status(404).json({
+        success: false,
+        message: "Ambulance not found",
       });
-    } catch (err) {
-      next(err);
     }
-  },
-);
+
+    return res.status(200).json({
+      success: true,
+      message: "Ambulance Details Retrieved Successfully",
+      data: ambulance,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ৪. Update (ADMIN only - Protected)
 router.patch(
