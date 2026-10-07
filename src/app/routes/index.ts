@@ -13,7 +13,7 @@ rootRouter.use('/auth', authRoutes);
 rootRouter.use('/users', userRoutes);
 rootRouter.use('/ambulances', ambulanceRoutes);
 rootRouter.use('/rides', rideRoutes);
-rootRouter.use('/payments', paymentRoutes);
+rootRouter.use('/payment', paymentRoutes);
 rootRouter.use('/admin', adminRoutes);
 
 export default rootRouter;

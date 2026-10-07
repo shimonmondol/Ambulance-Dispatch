@@ -175,7 +175,6 @@ router.get(
       }
 
       const whereConditions = { AND: andConditions };
-
       const [rides, total] = await Promise.all([
         prisma.rideRequest.findMany({
           where: whereConditions,
