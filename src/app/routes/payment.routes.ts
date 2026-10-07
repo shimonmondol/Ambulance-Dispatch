@@ -12,6 +12,7 @@ import SSLCommerzPayment from "sslcommerz-lts";
 
 const router = Router();
 
+
 // 1. SSLCommerz Session Init (POST /payment/ssl-init)
 router.post(
   "/ssl-init",
@@ -27,12 +28,16 @@ router.post(
       });
 
       if (!ride) {
-        res.status(404).json({ success: false, message: "Ride request not found" });
+        res
+          .status(404)
+          .json({ success: false, message: "Ride request not found" });
         return;
       }
 
       if (ride.payment && ride.payment.status === PaymentStatus.PAID) {
-        res.status(400).json({ success: false, message: "Ride is already paid for" });
+        res
+          .status(400)
+          .json({ success: false, message: "Ride is already paid for" });
         return;
       }
 
@@ -65,8 +70,8 @@ router.post(
         currency: "BDT",
         tran_id: tran_id,
         success_url: `${backendBase}/payment/ssl-success?rideId=${ride.id}&tran_id=${tran_id}`,
-        fail_url: `${backendBase}/payment/ssl-fail?rideId=${ride.id}`,
-        cancel_url: `${backendBase}/payment/ssl-cancel?rideId=${ride.id}`,
+        fail_url: `${backendBase}/payment/ssl-fail?rideId=${ride.id}&tran_id=${tran_id}`,
+        cancel_url: `${backendBase}/payment/ssl-cancel?rideId=${ride.id}&tran_id=${tran_id}`,
         ipn_url: `${backendBase}/payment/ssl-ipn`,
         shipping_method: "NO",
         product_name: "Emergency Ambulance Dispatch",
@@ -102,10 +107,10 @@ router.post(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
-// SSLCommerz Success / Fail / Cancel Callbacks
+// 2. SSLCommerz Success Callback Handler
 router.post("/ssl-success", async (req: Request, res: Response) => {
   const { rideId, tran_id } = req.query as { rideId: string; tran_id: string };
   const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
@@ -121,6 +126,7 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
             ...(tran_id ? { transactionId: tran_id } : {}),
           },
         });
+
         const updatedRide = await tx.rideRequest.update({
           where: { id: rideId },
           data: { status: DispatchStatus.COMPLETED },
@@ -139,24 +145,113 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
       });
     }
 
-    res.redirect(`${frontendBase}/customer/dashboard?payment=success`);
-  } catch (error) {
-    console.error("SSL Success Error:", error);
-    res.redirect(`${frontendBase}/customer/dashboard?payment=error`);
+    res.redirect(
+      `${frontendBase}/payment/success?rideId=${rideId}&tran_id=${tran_id || ""}`,
+    );
+  } catch {
+    res.redirect(`${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`);
   }
 });
 
+
+// 3. SSLCommerz Fail Callback Handler
 router.post("/ssl-fail", async (req: Request, res: Response) => {
+  const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
   const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
-  res.redirect(`${frontendBase}/customer/dashboard?payment=failed`);
+
+  try {
+    if (rideId) {
+      await prisma.$transaction(async (tx) => {
+        // Mark payment record as failed
+        await tx.payment.updateMany({
+          where: { rideRequestId: rideId },
+          data: {
+            status: PaymentStatus.FAILED,
+            provider: "SSLCOMMERZ",
+            ...(tran_id ? { transactionId: tran_id } : {}),
+          },
+        });
+
+        // Set ride dispatch status to CANCELLED upon payment failure
+        const updatedRide = await tx.rideRequest.update({
+          where: { id: rideId },
+          data: { status: DispatchStatus.CANCELLED },
+        });
+
+        // Release associated vehicle and driver resources
+        if (updatedRide.providerId) {
+          await tx.ambulance.updateMany({
+            where: { providerId: updatedRide.providerId },
+            data: { isOperational: true },
+          });
+          await tx.providerProfile.updateMany({
+            where: { id: updatedRide.providerId },
+            data: { isAvailable: true },
+          });
+        }
+      });
+    }
+
+    // Redirect directly to the dedicated failed page
+    res.redirect(
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=declined`,
+    );
+  } catch {
+    res.redirect(
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
+    );
+  }
 });
 
+// 4. SSLCommerz Cancel Callback Handler
 router.post("/ssl-cancel", async (req: Request, res: Response) => {
+  const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
   const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
-  res.redirect(`${frontendBase}/customer/dashboard?payment=cancelled`);
+  try {
+    if (rideId) {
+      await prisma.$transaction(async (tx) => {
+        // Mark payment record as failed on user cancellation
+        await tx.payment.updateMany({
+          where: { rideRequestId: rideId },
+          data: {
+            status: PaymentStatus.FAILED,
+            provider: "SSLCOMMERZ",
+            ...(tran_id ? { transactionId: tran_id } : {}),
+          },
+        });
+
+        // Cancel the dispatch ride request
+        const updatedRide = await tx.rideRequest.update({
+          where: { id: rideId },
+          data: { status: DispatchStatus.CANCELLED },
+        });
+
+        // Release ambulance and driver
+        if (updatedRide.providerId) {
+          await tx.ambulance.updateMany({
+            where: { providerId: updatedRide.providerId },
+            data: { isOperational: true },
+          });
+          await tx.providerProfile.updateMany({
+            where: { id: updatedRide.providerId },
+            data: { isAvailable: true },
+          });
+        }
+      });
+    }
+
+    // Redirect to the dedicated failed page with cancellation reason
+    res.redirect(
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=user_cancelled`,
+    );
+  } catch {
+    res.redirect(
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
+    );
+  }
 });
 
-// 2. Pay for Ride (Direct / Manual Payment)
+// 5. Pay for Ride (Direct / Manual Payment)
 router.post(
   "/:id/pay",
   auth(Role.CUSTOMER, Role.ADMIN),
@@ -242,10 +337,10 @@ router.post(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
-// 3. Initiate Stripe Checkout Session
+// 6. Initiate Stripe Checkout Session
 router.post(
   "/create-checkout-session/:requestId",
   auth(Role.CUSTOMER),
@@ -309,10 +404,10 @@ router.post(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
-// 4. Secure Stripe Webhook Handler
+// 7. Secure Stripe Webhook Handler
 router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
   const sig = req.headers["stripe-signature"] as string;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -332,7 +427,7 @@ router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
       event = stripe.webhooks.constructEvent(
         Buffer.isBuffer(req.body) ? req.body : rawString,
         sig,
-        webhookSecret
+        webhookSecret,
       );
     } else {
       event = JSON.parse(rawString);
@@ -352,7 +447,8 @@ router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
   if (eventType === "checkout.session.completed" && session) {
     const sessionId = session.id as string;
     const rideRequestId =
-      session.client_reference_id || (session.metadata && session.metadata.rideRequestId);
+      session.client_reference_id ||
+      (session.metadata && session.metadata.rideRequestId);
     const paymentIntentId =
       typeof session.payment_intent === "string"
         ? session.payment_intent
@@ -411,7 +507,7 @@ async function txAmbulanceUpdate(providerId: string) {
   });
 }
 
-// 5. Get Payment Status By Request ID
+// 8. Get Payment Status By Request ID
 router.get(
   "/:requestId/status",
   auth(Role.ADMIN, Role.CUSTOMER),
@@ -446,10 +542,10 @@ router.get(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
-// 6. Payment History
+// 9. Payment History
 router.get(
   "/",
   auth(Role.ADMIN, Role.CUSTOMER),
@@ -460,7 +556,6 @@ router.get(
         user.role === Role.CUSTOMER
           ? { rideRequest: { customerId: user.id } }
           : {};
-
       const payments = await prisma.payment.findMany({
         where: whereCondition,
         orderBy: { createdAt: "desc" },
@@ -476,7 +571,6 @@ router.get(
           },
         },
       });
-
       res.status(200).json({
         success: true,
         message: "Payment history retrieved successfully",
@@ -485,7 +579,7 @@ router.get(
     } catch (err) {
       next(err);
     }
-  }
+  },
 );
 
 export const paymentRoutes = router;
