@@ -7,11 +7,22 @@ import {
 import { Role, PaymentStatus, DispatchStatus } from "@prisma/client";
 import { prisma } from "../../prisma.js";
 import { auth } from "../middlewares/auth.js";
-import { stripe, StripeService } from "../services/stripe.service.js";
+// @ts-ignore
 import SSLCommerzPayment from "sslcommerz-lts";
 
 const router = Router();
 
+// Helper to update ambulance & provider availability
+async function updateProviderAndAmbulanceStatus(providerId: string) {
+  await prisma.ambulance.updateMany({
+    where: { providerId },
+    data: { isOperational: true },
+  });
+  await prisma.providerProfile.updateMany({
+    where: { id: providerId },
+    data: { isAvailable: true },
+  });
+}
 
 // 1. SSLCommerz Session Init (POST /payment/ssl-init)
 router.post(
@@ -149,10 +160,11 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
       `${frontendBase}/payment/success?rideId=${rideId}&tran_id=${tran_id || ""}`,
     );
   } catch {
-    res.redirect(`${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`);
+    res.redirect(
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
+    );
   }
 });
-
 
 // 3. SSLCommerz Fail Callback Handler
 router.post("/ssl-fail", async (req: Request, res: Response) => {
@@ -162,7 +174,6 @@ router.post("/ssl-fail", async (req: Request, res: Response) => {
   try {
     if (rideId) {
       await prisma.$transaction(async (tx) => {
-        // Mark payment record as failed
         await tx.payment.updateMany({
           where: { rideRequestId: rideId },
           data: {
@@ -172,13 +183,11 @@ router.post("/ssl-fail", async (req: Request, res: Response) => {
           },
         });
 
-        // Set ride dispatch status to CANCELLED upon payment failure
         const updatedRide = await tx.rideRequest.update({
           where: { id: rideId },
           data: { status: DispatchStatus.CANCELLED },
         });
 
-        // Release associated vehicle and driver resources
         if (updatedRide.providerId) {
           await tx.ambulance.updateMany({
             where: { providerId: updatedRide.providerId },
@@ -192,7 +201,6 @@ router.post("/ssl-fail", async (req: Request, res: Response) => {
       });
     }
 
-    // Redirect directly to the dedicated failed page
     res.redirect(
       `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=declined`,
     );
@@ -207,10 +215,10 @@ router.post("/ssl-fail", async (req: Request, res: Response) => {
 router.post("/ssl-cancel", async (req: Request, res: Response) => {
   const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
   const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
+
   try {
     if (rideId) {
       await prisma.$transaction(async (tx) => {
-        // Mark payment record as failed on user cancellation
         await tx.payment.updateMany({
           where: { rideRequestId: rideId },
           data: {
@@ -220,13 +228,11 @@ router.post("/ssl-cancel", async (req: Request, res: Response) => {
           },
         });
 
-        // Cancel the dispatch ride request
         const updatedRide = await tx.rideRequest.update({
           where: { id: rideId },
           data: { status: DispatchStatus.CANCELLED },
         });
 
-        // Release ambulance and driver
         if (updatedRide.providerId) {
           await tx.ambulance.updateMany({
             where: { providerId: updatedRide.providerId },
@@ -240,7 +246,6 @@ router.post("/ssl-cancel", async (req: Request, res: Response) => {
       });
     }
 
-    // Redirect to the dedicated failed page with cancellation reason
     res.redirect(
       `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=user_cancelled`,
     );
@@ -251,7 +256,42 @@ router.post("/ssl-cancel", async (req: Request, res: Response) => {
   }
 });
 
-// 5. Pay for Ride (Direct / Manual Payment)
+// 5. SSLCommerz IPN (Instant Payment Notification) Handler
+router.post("/ssl-ipn", async (req: Request, res: Response) => {
+  try {
+    const { tran_id, status } = req.body;
+
+    if (status === "VALID") {
+      const payment = await prisma.payment.findFirst({
+        where: { transactionId: tran_id },
+      });
+
+      if (payment && payment.status !== PaymentStatus.PAID) {
+        await prisma.$transaction(async (tx) => {
+          await tx.payment.update({
+            where: { id: payment.id },
+            data: { status: PaymentStatus.PAID, provider: "SSLCOMMERZ" },
+          });
+
+          const updatedRide = await tx.rideRequest.update({
+            where: { id: payment.rideRequestId },
+            data: { status: DispatchStatus.COMPLETED },
+          });
+
+          if (updatedRide.providerId) {
+            await updateProviderAndAmbulanceStatus(updatedRide.providerId);
+          }
+        });
+      }
+    }
+
+    res.status(200).json({ message: "IPN received successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "IPN processing error", error });
+  }
+});
+
+// 6. Direct / Manual Payment (Cash)
 router.post(
   "/:id/pay",
   auth(Role.CUSTOMER, Role.ADMIN),
@@ -340,174 +380,7 @@ router.post(
   },
 );
 
-// 6. Initiate Stripe Checkout Session
-router.post(
-  "/create-checkout-session/:requestId",
-  auth(Role.CUSTOMER),
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const requestId = req.params.requestId as string;
-      const user = (req as any).user;
-      const ride = await prisma.rideRequest.findFirst({
-        where: { id: requestId, customerId: user.id, deletedAt: null },
-        include: { customer: true, payment: true },
-      });
-
-      if (!ride) {
-        res.status(404).json({
-          success: false,
-          message: "Ride request not found",
-        });
-        return;
-      }
-
-      if (ride.payment && ride.payment.status === PaymentStatus.PAID) {
-        res.status(400).json({
-          success: false,
-          message: "Ride has already been paid for",
-        });
-        return;
-      }
-
-      const session = await StripeService.createCheckoutSession({
-        amount: ride.fareAmount,
-        rideRequestId: ride.id,
-        customerEmail: ride.customer.email,
-        customerName: ride.customer.name,
-      });
-
-      await prisma.payment.upsert({
-        where: { rideRequestId: ride.id },
-        update: {
-          transactionId: session.id,
-          provider: "STRIPE",
-          status: PaymentStatus.PENDING,
-          amount: ride.fareAmount,
-        },
-        create: {
-          rideRequestId: ride.id,
-          amount: ride.fareAmount,
-          transactionId: session.id,
-          provider: "STRIPE",
-          status: PaymentStatus.PENDING,
-        },
-      });
-
-      res.status(200).json({
-        success: true,
-        message: "Stripe checkout session initialized successfully",
-        data: {
-          sessionId: session.id,
-          paymentUrl: session.url,
-        },
-      });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
-
-// 7. Secure Stripe Webhook Handler
-router.post("/webhook", async (req: Request, res: Response): Promise<void> => {
-  const sig = req.headers["stripe-signature"] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  let event: any = null;
-  let rawString = "";
-  if (Buffer.isBuffer(req.body)) {
-    rawString = req.body.toString("utf8");
-  } else if (typeof req.body === "string") {
-    rawString = req.body;
-  } else {
-    rawString = JSON.stringify(req.body);
-  }
-
-  try {
-    if (webhookSecret && sig) {
-      event = stripe.webhooks.constructEvent(
-        Buffer.isBuffer(req.body) ? req.body : rawString,
-        sig,
-        webhookSecret,
-      );
-    } else {
-      event = JSON.parse(rawString);
-    }
-  } catch {
-    try {
-      event = JSON.parse(rawString);
-    } catch {
-      res.status(400).send("Invalid JSON Payload");
-      return;
-    }
-  }
-
-  const eventType = event?.type;
-  const session = event?.data?.object;
-
-  if (eventType === "checkout.session.completed" && session) {
-    const sessionId = session.id as string;
-    const rideRequestId =
-      session.client_reference_id ||
-      (session.metadata && session.metadata.rideRequestId);
-    const paymentIntentId =
-      typeof session.payment_intent === "string"
-        ? session.payment_intent
-        : session.id;
-
-    try {
-      await prisma.payment.updateMany({
-        where: {
-          OR: [
-            ...(rideRequestId ? [{ rideRequestId }] : []),
-            { transactionId: sessionId },
-          ],
-        },
-        data: {
-          status: PaymentStatus.PAID,
-          provider: "STRIPE",
-          transactionId: paymentIntentId || sessionId,
-        },
-      });
-
-      const targetRideId =
-        rideRequestId ||
-        (
-          await prisma.payment.findFirst({
-            where: { transactionId: sessionId },
-            select: { rideRequestId: true },
-          })
-        )?.rideRequestId;
-
-      if (targetRideId) {
-        const updatedRide = await prisma.rideRequest.update({
-          where: { id: targetRideId },
-          data: { status: DispatchStatus.COMPLETED },
-        });
-
-        if (updatedRide.providerId) {
-          await txAmbulanceUpdate(updatedRide.providerId);
-        }
-      }
-    } catch (webhookErr) {
-      console.error("Webhook processing error:", webhookErr);
-    }
-  }
-
-  res.status(200).json({ received: true });
-});
-
-async function txAmbulanceUpdate(providerId: string) {
-  await prisma.ambulance.updateMany({
-    where: { providerId },
-    data: { isOperational: true },
-  });
-  await prisma.providerProfile.updateMany({
-    where: { id: providerId },
-    data: { isAvailable: true },
-  });
-}
-
-// 8. Get Payment Status By Request ID
+// 7. Get Payment Status By Request ID
 router.get(
   "/:requestId/status",
   auth(Role.ADMIN, Role.CUSTOMER),
@@ -545,7 +418,7 @@ router.get(
   },
 );
 
-// 9. Payment History
+// 8. Payment History
 router.get(
   "/",
   auth(Role.ADMIN, Role.CUSTOMER),
