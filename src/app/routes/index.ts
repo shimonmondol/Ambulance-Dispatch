@@ -5,6 +5,7 @@ import { ambulanceRoutes } from './ambulance.route.js';
 import { rideRoutes } from './ride.routes.js';
 import { paymentRoutes } from './payment.routes.js';
 import { adminRoutes } from './admin.routes.js';
+import { providerRoutes } from './provider.routes.js';
 
 
 const rootRouter = Router();
@@ -15,5 +16,6 @@ rootRouter.use('/ambulances', ambulanceRoutes);
 rootRouter.use('/rides', rideRoutes);
 rootRouter.use('/payment', paymentRoutes);
 rootRouter.use('/admin', adminRoutes);
+rootRouter.use('/provider', providerRoutes);
 
 export default rootRouter;
