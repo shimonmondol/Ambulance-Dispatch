@@ -10,9 +10,7 @@ import { auth } from "../middlewares/auth.js";
 
 const router = Router();
 
-// ==========================================
 // 1. Dashboard Analytics Overview (Admin)
-// ==========================================
 router.get(
   "/overview",
   auth(Role.ADMIN),
@@ -138,9 +136,8 @@ router.get(
   },
 );
 
-// ==========================================
+
 // 2. All Users Management (Admin)
-// ==========================================
 router.get(
   "/users",
   auth(Role.ADMIN),
@@ -168,7 +165,6 @@ router.get(
           updatedAt: true,
         },
       });
-
       res.status(200).json({
         success: true,
         message: "All users fetched",
@@ -180,9 +176,8 @@ router.get(
   },
 );
 
-// ==========================================
+
 // 3. Update User Role
-// ==========================================
 router.patch(
   "/users/:id/role",
   auth(Role.ADMIN),
@@ -227,9 +222,8 @@ router.patch(
   },
 );
 
-// ==========================================
+
 // 4. Toggle User Verification Status
-// ==========================================
 router.patch(
   "/users/:id/verify",
   auth(Role.ADMIN),
@@ -267,9 +261,8 @@ router.patch(
   },
 );
 
-// ==========================================
+
 // 5. Suspend / Ban User Account
-// ==========================================
 router.patch(
   "/users/:id/toggle-ban",
   auth(Role.ADMIN),
@@ -315,9 +308,8 @@ router.patch(
   },
 );
 
-// ==========================================
+
 // 6. Global Ride Requests Master List
-// ==========================================
 router.get(
   "/rides",
   auth(Role.ADMIN),
@@ -357,9 +349,8 @@ router.get(
   },
 );
 
-// ==========================================
+
 // 7. Get All Registered Ambulances & Fleets (READ)
-// ==========================================
 router.get(
   "/ambulances",
   auth(Role.ADMIN),
@@ -399,9 +390,8 @@ router.get(
   },
 );
 
-// ==========================================
+
 // 8. Create Ambulance (CREATE)
-// ==========================================
 router.post(
   "/ambulances",
   auth(Role.ADMIN),
@@ -430,7 +420,6 @@ router.post(
         return;
       }
 
-      // providerId ফিল্ড পাঠানো যাবে না; Prisma রিলেশন থাকলে connect করতে হয়, না থাকলে ফিল্ডটি রাখা যাবে না
       const newAmbulance = await prisma.ambulance.create({
         data: {
           registrationNo,
@@ -438,7 +427,6 @@ router.post(
           name: name || undefined,
           image: image || null,
           isOperational: true,
-          // স্কিমায় baseFare বা perKmFare থাকলে সেভ হবে:
           ...((prisma.ambulance as any).fields?.baseFare
             ? { baseFare: Number(baseFare) || 0 }
             : {}),
@@ -467,9 +455,8 @@ router.post(
   },
 );
 
-// ==========================================
+
 // 9. Update Ambulance Fleet (UPDATE)
-// ==========================================
 router.put(
   "/ambulances/:id",
   auth(Role.ADMIN),
@@ -480,6 +467,7 @@ router.put(
         registrationNo,
         type,
         name,
+        image,
         baseFare,
         perKmFare,
         responseTime,
@@ -492,6 +480,7 @@ router.put(
           registrationNo,
           type,
           ...((prisma.ambulance as any).fields?.name ? { name } : {}),
+          ...((prisma.ambulance as any).fields?.image ? { image } : {}),
           ...((prisma.ambulance as any).fields?.baseFare
             ? { baseFare: Number(baseFare) || 0 }
             : {}),
@@ -526,9 +515,8 @@ router.put(
   },
 );
 
-// ==========================================
+
 // 10. Delete Ambulance Fleet (DELETE - Soft Delete)
-// ==========================================
 router.delete(
   "/ambulances/:id",
   auth(Role.ADMIN),
@@ -551,9 +539,115 @@ router.delete(
   },
 );
 
-// ==========================================
-// 11. Verify / Approve Ambulance Fleet
-// ==========================================
+
+// 11. All Payments & Financial Ledger (Admin)
+router.get(
+  "/payments",
+  auth(Role.ADMIN),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const status = req.query.status as string;
+
+      const whereClause: any = {};
+      if (status && status !== "ALL") {
+        whereClause.status = status as PaymentStatus;
+      }
+
+      const [payments, summary] = await Promise.all([
+        prisma.payment.findMany({
+          where: whereClause,
+          orderBy: { createdAt: "desc" },
+          include: {
+            rideRequest: {
+              select: {
+                id: true,
+                pickupAddress: true,
+                destination: true,
+                ambulanceType: true,
+                customer: {
+                  select: { id: true, name: true, phone: true, email: true },
+                },
+              },
+            },
+          },
+        }),
+        prisma.payment.groupBy({
+          by: ["status"],
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+      ]);
+
+      let totalPaid = 0;
+      let totalPending = 0;
+      let totalFailed = 0;
+
+      summary.forEach((item) => {
+        const sum = item._sum.amount || 0;
+        if (item.status === PaymentStatus.PAID) totalPaid += sum;
+        else if (item.status === PaymentStatus.UNPAID) totalPending += sum;
+        else if (item.status === PaymentStatus.FAILED) totalFailed += sum;
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Payment records fetched successfully",
+        data: {
+          summary: {
+            totalPaid,
+            totalPending,
+            totalFailed,
+            totalTransactions: payments.length,
+          },
+          payments,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+
+// 12. Update / Settle Payment Status
+router.patch(
+  "/payments/:id/status",
+  auth(Role.ADMIN),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = req.params.id as string;
+      const { status } = req.body;
+
+      if (!status || !Object.values(PaymentStatus).includes(status)) {
+        res
+          .status(400)
+          .json({ success: false, message: "Valid payment status is required" });
+        return;
+      }
+
+      const updatedPayment = await prisma.payment.update({
+        where: { id },
+        data: { status },
+        include: {
+          rideRequest: {
+            select: { id: true, customer: { select: { name: true } } },
+          },
+        },
+      });
+
+      res.status(200).json({
+        success: true,
+        message: `Payment status updated to ${status}`,
+        data: updatedPayment,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+
+// 13. Verify / Approve Ambulance Fleet
 router.patch(
   "/ambulances/:id/verify",
   auth(Role.ADMIN),
@@ -586,9 +680,8 @@ router.patch(
   },
 );
 
-// ==========================================
-// 12. Audit Trail Inspection
-// ==========================================
+
+// 14. Audit Trail Inspection
 router.get(
   "/audit-logs",
   auth(Role.ADMIN),
