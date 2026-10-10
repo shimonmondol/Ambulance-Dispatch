@@ -12,6 +12,47 @@ import SSLCommerzPayment from "sslcommerz-lts";
 
 const router = Router();
 
+// ==========================================
+// ডোমেইন কনফিগারেশন (আপনার Vercel লিংকটি নিচে বসিয়ে দিন)
+// ==========================================
+const VERCEL_APP_URL = "https://your-ambulance-app.vercel.app"; // <-- এখানে আপনার Vercel-এর লাইভ লিংক দিন
+
+// ডাইনামিক ফ্রন্টএন্ড URL বের করার হেল্পার
+function getFrontendBaseUrl(req: Request): string {
+  // ১. রেফারার বা অরিজিন থেকে Vercel ইউআরএল পাওয়া গেলে সেটা নিবে
+  const referer = req.headers.referer;
+  const origin = req.headers.origin;
+
+  if (origin && !origin.includes("localhost")) {
+    return origin.replace(/\/$/, "");
+  }
+
+  if (referer && !referer.includes("localhost")) {
+    try {
+      const url = new URL(referer);
+      return url.origin;
+    } catch {}
+  }
+
+  // ২. যদি হোস্ট localhost হয়
+  if (req.headers.host?.includes("localhost")) {
+    return process.env.FRONTEND_URL || "http://localhost:3000";
+  }
+
+  // ৩. প্রোডাকশনের জন্য ডিফল্ট Vercel ডোমেইন
+  return process.env.FRONTEND_URL || VERCEL_APP_URL;
+}
+
+// ব্যাকএন্ডের নিজস্ব বেস URL বের করার হেল্পার
+function getBackendBaseUrl(req: Request): string {
+  if (process.env.BACKEND_URL) {
+    return process.env.BACKEND_URL.replace(/\/$/, "");
+  }
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
+  const host = req.headers["x-forwarded-host"] || req.get("host") || "localhost:5000";
+  return `${protocol}://${host}`;
+}
+
 // Helper to update ambulance & provider availability
 async function updateProviderAndAmbulanceStatus(providerId: string) {
   await prisma.ambulance.updateMany({
@@ -24,7 +65,9 @@ async function updateProviderAndAmbulanceStatus(providerId: string) {
   });
 }
 
+// ==========================================
 // 1. SSLCommerz Session Init (POST /payment/ssl-init)
+// ==========================================
 router.post(
   "/ssl-init",
   auth(Role.CUSTOMER),
@@ -57,7 +100,9 @@ router.post(
       const is_live = process.env.IS_LIVE === "true";
 
       const tran_id = `SSLCZ_${Date.now()}_${ride.id.slice(-6)}`;
-      const backendBase = process.env.BACKEND_URL || "http://localhost:5000";
+      
+      // ডাইনামিক ব্যাকএন্ড বেস URL (লোকালহোস্ট অথবা লাইভ ব্যাকএন্ড)
+      const backendBase = getBackendBaseUrl(req);
 
       await prisma.payment.upsert({
         where: { rideRequestId: ride.id },
@@ -121,10 +166,12 @@ router.post(
   },
 );
 
+// ==========================================
 // 2. SSLCommerz Success Callback Handler
+// ==========================================
 router.post("/ssl-success", async (req: Request, res: Response) => {
   const { rideId, tran_id } = req.query as { rideId: string; tran_id: string };
-  const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
+  const frontendBase = getFrontendBaseUrl(req);
 
   try {
     if (rideId) {
@@ -156,20 +203,23 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
       });
     }
 
-    res.redirect(
+    // Vercel-এর /payment/success পেজে রিডাইরেক্ট
+    return res.redirect(
       `${frontendBase}/payment/success?rideId=${rideId}&tran_id=${tran_id || ""}`,
     );
   } catch {
-    res.redirect(
+    return res.redirect(
       `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
     );
   }
 });
 
-// 3. SSLCommerz Fail Callback Handler
-router.post("/ssl-fail", async (req: Request, res: Response) => {
+// ==========================================
+// 3. SSLCommerz Cancel Callback Handler
+// ==========================================
+router.post("/ssl-cancel", async (req: Request, res: Response) => {
   const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
-  const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
+  const frontendBase = getFrontendBaseUrl(req);
 
   try {
     if (rideId) {
@@ -201,62 +251,67 @@ router.post("/ssl-fail", async (req: Request, res: Response) => {
       });
     }
 
-    res.redirect(
+    // Vercel-এর /payment/cancel পেজে রিডাইরেক্ট
+    return res.redirect(
+      `${frontendBase}/payment/cancel?rideId=${rideId || ""}`,
+    );
+  } catch {
+    return res.redirect(
+      `${frontendBase}/payment/cancel?rideId=${rideId || ""}&reason=server_error`,
+    );
+  }
+});
+
+// ==========================================
+// 4. SSLCommerz Fail Callback Handler
+// ==========================================
+router.post("/ssl-fail", async (req: Request, res: Response) => {
+  const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
+  const frontendBase = getFrontendBaseUrl(req);
+
+  try {
+    if (rideId) {
+      await prisma.$transaction(async (tx) => {
+        await tx.payment.updateMany({
+          where: { rideRequestId: rideId },
+          data: {
+            status: PaymentStatus.FAILED,
+            provider: "SSLCOMMERZ",
+            ...(tran_id ? { transactionId: tran_id } : {}),
+          },
+        });
+
+        const updatedRide = await tx.rideRequest.update({
+          where: { id: rideId },
+          data: { status: DispatchStatus.CANCELLED },
+        });
+
+        if (updatedRide.providerId) {
+          await tx.ambulance.updateMany({
+            where: { providerId: updatedRide.providerId },
+            data: { isOperational: true },
+          });
+          await tx.providerProfile.updateMany({
+            where: { id: updatedRide.providerId },
+            data: { isAvailable: true },
+          });
+        }
+      });
+    }
+
+    return res.redirect(
       `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=declined`,
     );
   } catch {
-    res.redirect(
+    return res.redirect(
       `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
     );
   }
 });
 
-// 4. SSLCommerz Cancel Callback Handler
-router.post("/ssl-cancel", async (req: Request, res: Response) => {
-  const { rideId, tran_id } = req.query as { rideId: string; tran_id?: string };
-  const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
-
-  try {
-    if (rideId) {
-      await prisma.$transaction(async (tx) => {
-        await tx.payment.updateMany({
-          where: { rideRequestId: rideId },
-          data: {
-            status: PaymentStatus.FAILED,
-            provider: "SSLCOMMERZ",
-            ...(tran_id ? { transactionId: tran_id } : {}),
-          },
-        });
-
-        const updatedRide = await tx.rideRequest.update({
-          where: { id: rideId },
-          data: { status: DispatchStatus.CANCELLED },
-        });
-
-        if (updatedRide.providerId) {
-          await tx.ambulance.updateMany({
-            where: { providerId: updatedRide.providerId },
-            data: { isOperational: true },
-          });
-          await tx.providerProfile.updateMany({
-            where: { id: updatedRide.providerId },
-            data: { isAvailable: true },
-          });
-        }
-      });
-    }
-
-    res.redirect(
-      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=user_cancelled`,
-    );
-  } catch {
-    res.redirect(
-      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
-    );
-  }
-});
-
-// 5. SSLCommerz IPN (Instant Payment Notification) Handler
+// ==========================================
+// 5. SSLCommerz IPN Handler
+// ==========================================
 router.post("/ssl-ipn", async (req: Request, res: Response) => {
   try {
     const { tran_id, status } = req.body;
@@ -291,7 +346,9 @@ router.post("/ssl-ipn", async (req: Request, res: Response) => {
   }
 });
 
+// ==========================================
 // 6. Direct / Manual Payment (Cash)
+// ==========================================
 router.post(
   "/:id/pay",
   auth(Role.CUSTOMER, Role.ADMIN),
@@ -380,7 +437,9 @@ router.post(
   },
 );
 
+// ==========================================
 // 7. Get Payment Status By Request ID
+// ==========================================
 router.get(
   "/:requestId/status",
   auth(Role.ADMIN, Role.CUSTOMER),
@@ -418,7 +477,9 @@ router.get(
   },
 );
 
+// ==========================================
 // 8. Payment History
+// ==========================================
 router.get(
   "/",
   auth(Role.ADMIN, Role.CUSTOMER),
