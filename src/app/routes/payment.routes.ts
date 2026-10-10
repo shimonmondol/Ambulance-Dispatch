@@ -13,44 +13,59 @@ import SSLCommerzPayment from "sslcommerz-lts";
 const router = Router();
 
 // ==========================================
-// ডোমেইন কনফিগারেশন (আপনার Vercel লিংকটি নিচে বসিয়ে দিন)
+// ডোমেইন কনফিগারেশন
 // ==========================================
-const VERCEL_APP_URL = "https://your-ambulance-app.vercel.app"; // <-- এখানে আপনার Vercel-এর লাইভ লিংক দিন
+// আপনার নিশ্চিত করা লাইভ ব্যাকএন্ড URL
+const LIVE_BACKEND_URL = "https://ambulance-dispatch-mu.vercel.app";
 
-// ডাইনামিক ফ্রন্টএন্ড URL বের করার হেল্পার
+// ব্যাকএন্ডের নিজস্ব বেস URL (SSLCommerz যাতে লাইভ এন্ডপয়েন্টে কলব্যাক পাঠায়)
+function getBackendBaseUrl(req: Request): string {
+  if (process.env.BACKEND_URL) {
+    return process.env.BACKEND_URL.replace(/\/$/, "");
+  }
+
+  // যদি রিকোয়েস্ট লোকালহোস্টে টেস্ট করা হয়
+  if (req.headers.host?.includes("localhost")) {
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
+    return `${protocol}://${req.get("host")}`;
+  }
+
+  // লাইভ সার্ভারের জন্য
+  return LIVE_BACKEND_URL;
+}
+
+// ফ্রন্টএন্ড বেস URL বের করার হেল্পার
 function getFrontendBaseUrl(req: Request): string {
-  // ১. রেফারার বা অরিজিন থেকে Vercel ইউআরএল পাওয়া গেলে সেটা নিবে
-  const referer = req.headers.referer;
-  const origin = req.headers.origin;
+  if (process.env.FRONTEND_URL) {
+    return process.env.FRONTEND_URL.replace(/\/$/, "");
+  }
 
-  if (origin && !origin.includes("localhost")) {
+  const origin = req.headers.origin as string | undefined;
+  const referer = req.headers.referer as string | undefined;
+
+  // ক্লায়েন্ট যদি লোকালহোস্ট থেকে কল করে
+  if (
+    (origin && origin.includes("localhost")) ||
+    (referer && referer.includes("localhost")) ||
+    req.headers.host?.includes("localhost")
+  ) {
+    return "http://localhost:3000";
+  }
+
+  // ক্লায়েন্ট থেকে অন্য কোনো বৈধ ফ্রন্টএন্ড ডোমেইন এলে (SSLCommerz ছাড়া)
+  if (origin && !origin.includes("sslcommerz")) {
     return origin.replace(/\/$/, "");
   }
 
-  if (referer && !referer.includes("localhost")) {
+  if (referer && !referer.includes("sslcommerz")) {
     try {
       const url = new URL(referer);
       return url.origin;
     } catch {}
   }
 
-  // ২. যদি হোস্ট localhost হয়
-  if (req.headers.host?.includes("localhost")) {
-    return process.env.FRONTEND_URL || "http://localhost:3000";
-  }
-
-  // ৩. প্রোডাকশনের জন্য ডিফল্ট Vercel ডোমেইন
-  return process.env.FRONTEND_URL || VERCEL_APP_URL;
-}
-
-// ব্যাকএন্ডের নিজস্ব বেস URL বের করার হেল্পার
-function getBackendBaseUrl(req: Request): string {
-  if (process.env.BACKEND_URL) {
-    return process.env.BACKEND_URL.replace(/\/$/, "");
-  }
-  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  const host = req.headers["x-forwarded-host"] || req.get("host") || "localhost:5000";
-  return `${protocol}://${host}`;
+  // লাইভ প্রোডাকশনের ফ্রন্টএন্ড URL
+  return LIVE_BACKEND_URL;
 }
 
 // Helper to update ambulance & provider availability
@@ -101,7 +116,7 @@ router.post(
 
       const tran_id = `SSLCZ_${Date.now()}_${ride.id.slice(-6)}`;
       
-      // ডাইনামিক ব্যাকএন্ড বেস URL (লোকালহোস্ট অথবা লাইভ ব্যাকএন্ড)
+      // ডাইনামিক লাইভ ব্যাকএন্ড URL নিশ্চিত করা
       const backendBase = getBackendBaseUrl(req);
 
       await prisma.payment.upsert({
@@ -203,7 +218,6 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
       });
     }
 
-    // Vercel-এর /payment/success পেজে রিডাইরেক্ট
     return res.redirect(
       `${frontendBase}/payment/success?rideId=${rideId}&tran_id=${tran_id || ""}`,
     );
@@ -251,7 +265,6 @@ router.post("/ssl-cancel", async (req: Request, res: Response) => {
       });
     }
 
-    // Vercel-এর /payment/cancel পেজে রিডাইরেক্ট
     return res.redirect(
       `${frontendBase}/payment/cancel?rideId=${rideId || ""}`,
     );
