@@ -15,22 +15,20 @@ const router = Router();
 // ==========================================
 // ডোমেইন কনফিগারেশন
 // ==========================================
-// আপনার নিশ্চিত করা লাইভ ব্যাকএন্ড URL
 const LIVE_BACKEND_URL = "https://ambulance-dispatch-mu.vercel.app";
+const LIVE_FRONTEND_URL = "https://ambulance-dispatch-client.vercel.app";
 
-// ব্যাকএন্ডের নিজস্ব বেস URL (SSLCommerz যাতে লাইভ এন্ডপয়েন্টে কলব্যাক পাঠায়)
+// ব্যাকএন্ডের নিজস্ব বেস URL (SSLCommerz কলব্যাকের জন্য)
 function getBackendBaseUrl(req: Request): string {
   if (process.env.BACKEND_URL) {
     return process.env.BACKEND_URL.replace(/\/$/, "");
   }
 
-  // যদি রিকোয়েস্ট লোকালহোস্টে টেস্ট করা হয়
   if (req.headers.host?.includes("localhost")) {
     const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
     return `${protocol}://${req.get("host")}`;
   }
 
-  // লাইভ সার্ভারের জন্য
   return LIVE_BACKEND_URL;
 }
 
@@ -43,7 +41,7 @@ function getFrontendBaseUrl(req: Request): string {
   const origin = req.headers.origin as string | undefined;
   const referer = req.headers.referer as string | undefined;
 
-  // ক্লায়েন্ট যদি লোকালহোস্ট থেকে কল করে
+  // ক্লায়েন্ট যদি লোকালহোস্টে টেস্ট করে
   if (
     (origin && origin.includes("localhost")) ||
     (referer && referer.includes("localhost")) ||
@@ -52,20 +50,8 @@ function getFrontendBaseUrl(req: Request): string {
     return "http://localhost:3000";
   }
 
-  // ক্লায়েন্ট থেকে অন্য কোনো বৈধ ফ্রন্টএন্ড ডোমেইন এলে (SSLCommerz ছাড়া)
-  if (origin && !origin.includes("sslcommerz")) {
-    return origin.replace(/\/$/, "");
-  }
-
-  if (referer && !referer.includes("sslcommerz")) {
-    try {
-      const url = new URL(referer);
-      return url.origin;
-    } catch {}
-  }
-
-  // লাইভ প্রোডাকশনের ফ্রন্টএন্ড URL
-  return LIVE_BACKEND_URL;
+  // লাইভ প্রোডাকশনের ক্লায়েন্ট ডোমেইন
+  return LIVE_FRONTEND_URL;
 }
 
 // Helper to update ambulance & provider availability
@@ -116,7 +102,7 @@ router.post(
 
       const tran_id = `SSLCZ_${Date.now()}_${ride.id.slice(-6)}`;
       
-      // ডাইনামিক লাইভ ব্যাকএন্ড URL নিশ্চিত করা
+      // লাইভ ব্যাকএন্ড URL
       const backendBase = getBackendBaseUrl(req);
 
       await prisma.payment.upsert({
@@ -218,6 +204,7 @@ router.post("/ssl-success", async (req: Request, res: Response) => {
       });
     }
 
+    // ফ্রন্টএন্ড সাকসেস পেজে রিডাইরেক্ট
     return res.redirect(
       `${frontendBase}/payment/success?rideId=${rideId}&tran_id=${tran_id || ""}`,
     );
@@ -265,12 +252,13 @@ router.post("/ssl-cancel", async (req: Request, res: Response) => {
       });
     }
 
+    // ফ্রন্টএন্ড ফেইল্ড পেজে রিডাইরেক্ট
     return res.redirect(
-      `${frontendBase}/payment/cancel?rideId=${rideId || ""}`,
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=user_cancelled`,
     );
   } catch {
     return res.redirect(
-      `${frontendBase}/payment/cancel?rideId=${rideId || ""}&reason=server_error`,
+      `${frontendBase}/payment/failed?rideId=${rideId || ""}&reason=server_error`,
     );
   }
 });
